@@ -61,12 +61,6 @@ pub enum ContractError {
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
     WithdrawCooldownActive = 7,
 
-    /// Deposit attempted into a market that an admin has closed to new deposits.
-    ///
-    /// Set via the `closed_to_deposits` flag; trading, withdrawals, and
-    /// settlement remain unaffected.
-    MarketClosedToDeposits = 7,
-
     // ========== Position Errors (10-19) ==========
     /// User does not have enough collateral locked to perform this operation.
     ///
@@ -150,8 +144,8 @@ pub enum ContractError {
     /// Market metadata URI is invalid (e.g. exceeds the maximum length).
     InvalidMetadataUri = 37,
 
-    /// Proposed fee rate exceeds the configured fee cap.
-    FeeCapExceeded = 38,
+    /// Fee rate is invalid (e.g. exceeds the configured fee cap or is out of range).
+    InvalidFeeRate = 38,
 
     // ========== Authorization Errors (40-49) ==========
     /// Caller is not authorized to perform this action.
@@ -236,7 +230,6 @@ pub enum ContractError {
 
     /// `execute_fee_rate_change` was called before the timelock delay elapsed.
     TimelockNotElapsed = 111,
-
 }
 
 #[cfg(test)]
@@ -266,18 +259,25 @@ mod tests {
         assert_eq!(ContractError::InvalidQuestion as u32, 33);
         assert_eq!(ContractError::InvalidOutcomeCount as u32, 34);
         assert_eq!(ContractError::InvalidAdmin as u32, 35);
-        assert_eq!(ContractError::InvalidFeeRate as u32, 36);
+        assert_eq!(ContractError::BelowMinDeposit as u32, 36);
         assert_eq!(ContractError::InvalidMetadataUri as u32, 37);
-        assert_eq!(ContractError::BelowMinDeposit as u32, 38);
+        assert_eq!(ContractError::InvalidFeeRate as u32, 38);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
         assert_eq!(ContractError::NoPendingAdmin as u32, 43);
+        assert_eq!(ContractError::NoRenounceProposal as u32, 44);
+        assert_eq!(ContractError::RenounceAlreadyProposed as u32, 45);
+        assert_eq!(ContractError::FeeCapExceeded as u32, 46);
         assert_eq!(ContractError::TokenTransferFailed as u32, 50);
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
+        assert_eq!(ContractError::UpgradeRequired as u32, 70);
+        assert_eq!(ContractError::ResolutionNotFinalized as u32, 80);
         assert_eq!(ContractError::NotInitialized as u32, 90);
         assert_eq!(ContractError::ContractPaused as u32, 91);
         assert_eq!(ContractError::ReentrantCall as u32, 100);
+        assert_eq!(ContractError::NoPendingFeeChange as u32, 110);
+        assert_eq!(ContractError::TimelockNotElapsed as u32, 111);
     }
 
     #[test]
@@ -294,5 +294,68 @@ mod tests {
         assert!(ContractError::MarketNotFound < ContractError::InsufficientCollateral);
         assert!(ContractError::InvalidSignature < ContractError::InvalidPrice);
         assert!(ContractError::Unauthorized < ContractError::TokenTransferFailed);
+    }
+
+    /// Ensure no two variants share the same discriminant value.
+    ///
+    /// This test exhaustively compares every variant pair so a future merge
+    /// that accidentally reuses a discriminant is caught immediately rather
+    /// than at runtime via undefined behaviour.
+    #[test]
+    fn test_no_duplicate_discriminants() {
+        let all: &[(ContractError, u32)] = &[
+            (ContractError::MarketNotFound, 1),
+            (ContractError::MarketAlreadyResolved, 2),
+            (ContractError::MarketNotResolved, 3),
+            (ContractError::MarketExpired, 4),
+            (ContractError::MarketNotActive, 5),
+            (ContractError::MarketClosedToDeposits, 6),
+            (ContractError::WithdrawCooldownActive, 7),
+            (ContractError::InsufficientCollateral, 10),
+            (ContractError::PositionAlreadySettled, 11),
+            (ContractError::NoPositionFound, 12),
+            (ContractError::InvalidShareAmount, 13),
+            (ContractError::InvalidSignature, 20),
+            (ContractError::UnauthorizedOracle, 21),
+            (ContractError::InvalidOutcome, 22),
+            (ContractError::OraclePriceUnavailable, 23),
+            (ContractError::InvalidPrice, 30),
+            (ContractError::InvalidQuantity, 31),
+            (ContractError::InvalidTimestamp, 32),
+            (ContractError::InvalidQuestion, 33),
+            (ContractError::InvalidOutcomeCount, 34),
+            (ContractError::InvalidAdmin, 35),
+            (ContractError::BelowMinDeposit, 36),
+            (ContractError::InvalidMetadataUri, 37),
+            (ContractError::InvalidFeeRate, 38),
+            (ContractError::Unauthorized, 40),
+            (ContractError::NotAdmin, 41),
+            (ContractError::AlreadyInitialized, 42),
+            (ContractError::NoPendingAdmin, 43),
+            (ContractError::NoRenounceProposal, 44),
+            (ContractError::RenounceAlreadyProposed, 45),
+            (ContractError::FeeCapExceeded, 46),
+            (ContractError::TokenTransferFailed, 50),
+            (ContractError::ArithmeticOverflow, 60),
+            (ContractError::UpgradeRequired, 70),
+            (ContractError::ResolutionNotFinalized, 80),
+            (ContractError::NotInitialized, 90),
+            (ContractError::ContractPaused, 91),
+            (ContractError::ReentrantCall, 100),
+            (ContractError::NoPendingFeeChange, 110),
+            (ContractError::TimelockNotElapsed, 111),
+        ];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(
+                    all[i].1,
+                    all[j].1,
+                    "duplicate discriminant {} between {:?} and {:?}",
+                    all[i].1,
+                    all[i].0,
+                    all[j].0,
+                );
+            }
+        }
     }
 }

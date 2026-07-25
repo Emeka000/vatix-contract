@@ -86,6 +86,20 @@ pub enum StorageKey {
     MarketParticipants(u32),
     /// Pending fee-rate change awaiting its timelock delay (Issue #496).
     PendingFeeRate,
+    /// Timestamp of the last deposit made by a user in a market (issue #413).
+    /// Used to enforce the withdrawal cooldown period.
+    LastDepositTime(u32, Address),
+    /// Flag indicating a pending admin renounce proposal (issue #414).
+    /// Set when an admin initiates a renounce; cleared on confirm or cancel.
+    PendingRenounce,
+    /// Admin-managed list of addresses exempt from withdrawal fees (Issue #483).
+    FeeWaivers,
+    /// Hard upper bound on the withdrawal fee rate in basis points.
+    /// Prevents the admin from setting a fee rate above this cap.
+    FeeCap,
+    /// Ordered list of all market IDs ever created (append-only).
+    /// Used by off-chain indexers to enumerate all markets.
+    MarketIds,
 }
 
 // --- Version helpers ---
@@ -367,6 +381,8 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
     env.storage()
         .persistent()
         .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
+}
+
 // --- Deposit Reentrancy Lock (Issue #501) ---
 
 /// Check whether the deposit reentrancy lock is currently held.
