@@ -24,8 +24,8 @@ pub mod types;
 mod test;
 
 use crate::error::ContractError;
-use crate::types::{OutcomeTokenConfig, TokenKind};
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use crate::types::{MarketStatus, OutcomeTokenConfig, TokenKind};
+use soroban_sdk::{contract, contractimpl, Address, Env, IntoVal, String, Symbol};
 
 #[contract]
 pub struct OutcomeTokenContract;

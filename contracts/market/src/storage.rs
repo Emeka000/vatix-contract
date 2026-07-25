@@ -309,7 +309,10 @@ pub fn clear_admin(env: &Env) {
 // --- Fee Config Storage ---
 
 pub fn get_fee_rate_bps(env: &Env) -> i128 {
-    env.storage().persistent().get(&StorageKey::FeeRateBps).unwrap_or(0)
+    env.storage()
+        .persistent()
+        .get(&StorageKey::FeeRateBps)
+        .unwrap_or(DEFAULT_FEE_RATE_BPS)
 }
 
 pub fn set_fee_rate_bps(env: &Env, fee_rate_bps: i128) {
@@ -379,6 +382,108 @@ pub fn set_deposit_locked(env: &Env, locked: bool) {
     env.storage()
         .persistent()
         .set(&StorageKey::DepositLock, &locked);
+}
+
+// --- Resolution Contract Storage ---
+
+pub fn get_resolution_contract(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::ResolutionContract)
+}
+
+pub fn set_resolution_contract(env: &Env, contract: &Address) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::ResolutionContract, contract);
+}
+
+// --- Fee Waiver Storage (Issue #483) ---
+
+/// Default withdrawal fee rate in basis points (50 bps = 0.5%).
+pub const DEFAULT_FEE_RATE_BPS: i128 = 50;
+
+/// Maximum withdrawal fee rate in basis points (10_000 bps = 100%).
+pub const MAX_FEE_RATE_BPS: i128 = 10_000;
+
+/// Return the list of addresses currently exempt from withdrawal fees.
+pub fn get_fee_waivers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::FeeWaivers)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Store the full fee waiver list (replaces the previous list).
+pub fn set_fee_waivers(env: &Env, waivers: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::FeeWaivers, waivers);
+}
+
+/// Return whether `account` is currently on the fee waiver list.
+pub fn is_fee_waived(env: &Env, account: &Address) -> bool {
+    let waivers = get_fee_waivers(env);
+    waivers.contains(account)
+}
+
+/// Add `account` to the fee waiver list (idempotent).
+pub fn add_fee_waiver(env: &Env, account: &Address) {
+    let mut waivers = get_fee_waivers(env);
+    if !waivers.contains(account) {
+        waivers.push_back(account.clone());
+        set_fee_waivers(env, &waivers);
+    }
+}
+
+/// Remove `account` from the fee waiver list (no-op if not present).
+pub fn remove_fee_waiver(env: &Env, account: &Address) {
+    let waivers = get_fee_waivers(env);
+    let mut new_waivers = Vec::new(env);
+    for w in waivers.iter() {
+        if &w != account {
+            new_waivers.push_back(w);
+        }
+    }
+    set_fee_waivers(env, &new_waivers);
+}
+
+// --- Fee Cap Storage ---
+
+/// Hard upper bound on the fee rate (defaults to `MAX_FEE_RATE_BPS` when unset).
+pub fn get_fee_cap_bps(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::FeeCap)
+        .unwrap_or(MAX_FEE_RATE_BPS)
+}
+
+/// Alias for `get_all_market_ids` used by `list_markets`.
+pub fn get_market_ids(env: &Env) -> Vec<u32> {
+    get_all_market_ids(env)
+}
+
+/// Append `market_id` to the global ordered market-ID list.
+///
+/// Used by off-chain indexers that iterate over all markets via
+/// `get_all_market_ids`. The list is append-only; market IDs are never
+/// removed so the ordering matches creation order.
+pub fn append_market_id(env: &Env, market_id: u32) {
+    let mut ids: Vec<u32> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::MarketIds)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(market_id);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MarketIds, &ids);
+}
+
+/// Return the ordered list of all market IDs ever created.
+pub fn get_all_market_ids(env: &Env) -> Vec<u32> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketIds)
+        .unwrap_or_else(|| Vec::new(env))
 }
 
 #[cfg(test)]

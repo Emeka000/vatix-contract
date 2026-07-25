@@ -878,7 +878,7 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        storage::set_treasury(&env, &Some(treasury.clone()));
+        storage::set_treasury(&env, &treasury);
         events::emit_treasury_set(&env, &treasury);
         Ok(())
     }

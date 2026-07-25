@@ -52,8 +52,14 @@ pub enum ContractError {
     /// Only Active markets accept new trades and collateral deposits.
     MarketNotActive = 5,
 
+    /// New collateral deposits are disabled for this market.
+    ///
+    /// The admin has called `close_market_to_deposits`. Existing positions,
+    /// trades, and withdrawals continue to work normally.
+    MarketClosedToDeposits = 6,
+
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
-    WithdrawCooldownActive = 6,
+    WithdrawCooldownActive = 7,
 
     /// Deposit attempted into a market that an admin has closed to new deposits.
     ///
@@ -176,6 +182,12 @@ pub enum ContractError {
     /// A renounce proposal is already pending; cannot propose again until confirmed or canceled.
     RenounceAlreadyProposed = 45,
 
+    /// The requested fee rate exceeds the configured fee cap.
+    ///
+    /// The admin must lower the fee rate to at or below the cap before
+    /// calling `set_fee_rate`.
+    FeeCapExceeded = 46,
+
     // ========== Token Errors (50-59) ==========
     /// Token transfer failed (insufficient balance, approval, etc.).
     ///
@@ -239,6 +251,7 @@ mod tests {
         assert_eq!(ContractError::MarketExpired as u32, 4);
         assert_eq!(ContractError::MarketNotActive as u32, 5);
         assert_eq!(ContractError::MarketClosedToDeposits as u32, 6);
+        assert_eq!(ContractError::WithdrawCooldownActive as u32, 7);
         assert_eq!(ContractError::InsufficientCollateral as u32, 10);
         assert_eq!(ContractError::PositionAlreadySettled as u32, 11);
         assert_eq!(ContractError::NoPositionFound as u32, 12);
@@ -251,7 +264,11 @@ mod tests {
         assert_eq!(ContractError::InvalidQuantity as u32, 31);
         assert_eq!(ContractError::InvalidTimestamp as u32, 32);
         assert_eq!(ContractError::InvalidQuestion as u32, 33);
-        assert_eq!(ContractError::InvalidFeeRate as u32, 34);
+        assert_eq!(ContractError::InvalidOutcomeCount as u32, 34);
+        assert_eq!(ContractError::InvalidAdmin as u32, 35);
+        assert_eq!(ContractError::InvalidFeeRate as u32, 36);
+        assert_eq!(ContractError::InvalidMetadataUri as u32, 37);
+        assert_eq!(ContractError::BelowMinDeposit as u32, 38);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
@@ -260,7 +277,7 @@ mod tests {
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
         assert_eq!(ContractError::NotInitialized as u32, 90);
         assert_eq!(ContractError::ContractPaused as u32, 91);
-
+        assert_eq!(ContractError::ReentrantCall as u32, 100);
     }
 
     #[test]

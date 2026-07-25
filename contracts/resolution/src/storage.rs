@@ -1,5 +1,5 @@
 use crate::types::{ResolutionCandidate, ResolutionConfig};
-use soroban_sdk::{contracttype, Env};
+use soroban_sdk::{contracttype, Address, Env};
 
 #[contracttype]
 pub enum StorageKey {

@@ -54,5 +54,7 @@ pub struct ResolutionConfig {
     pub market_contract: Address,
     /// Default challenge window in seconds. Must be within
     /// `MIN_CHALLENGE_WINDOW_SECONDS..=MAX_CHALLENGE_WINDOW_SECONDS`.
-    pub default_challenge_window_seconds: u64,
+    /// (Renamed from `default_challenge_window_seconds` — Soroban enforces a
+    /// 30-character maximum on struct field names.)
+    pub challenge_window_secs: u64,
 }

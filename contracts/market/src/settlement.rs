@@ -3,6 +3,7 @@ use crate::storage;
 use crate::types::{AdapterType, Market, MarketStatus, Position};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{Address, Env, Vec};
+use vatix_outcome_token_contract::{types::TokenKind, OutcomeTokenContractClient};
 
 /// Calculate payout for a position based on market outcome
 ///
