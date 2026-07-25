@@ -26,6 +26,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [connectError, setConnectError] = useState<string | null>(null);
 
   const connect = useCallback(async () => {
+    if (typeof window === "undefined") {
+      // Guards against SSR/pre-render invocation; the wallet extension only
+      // exists in the browser, so there is nothing to connect to here.
+      return;
+    }
+
     setIsConnecting(true);
     setConnectError(null);
     try {

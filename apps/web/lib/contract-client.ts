@@ -13,10 +13,9 @@ import {
   BASE_FEE,
   Account,
   xdr,
-  Address,
   nativeToScVal,
+  scValToNative,
 } from "@stellar/stellar-sdk";
-import { signTransaction } from "@stellar/freighter-api";
 
 // Network configuration from environment
 const NETWORK_PASSPHRASE =
@@ -67,6 +66,12 @@ export async function invokeContract(
   args: xdr.ScVal[],
   sourceAddress: string
 ): Promise<InvokeResult> {
+  if (typeof window === "undefined") {
+    throw new Error(
+      "invokeContract can only run in the browser (requires a wallet extension)."
+    );
+  }
+
   if (!contractId) {
     throw new Error(
       "Contract ID not configured. Set NEXT_PUBLIC_*_CONTRACT_ID in .env.local"
@@ -114,7 +119,10 @@ export async function invokeContract(
       simulated
     ).build();
 
-    // 6. Sign with Freighter
+    // 6. Sign with Freighter. Imported dynamically (rather than at module
+    // scope) so this module stays safe to import from server-rendered code
+    // paths; the extension is only ever touched once we're in the browser.
+    const { signTransaction } = await import("@stellar/freighter-api");
     const signedResult = await signTransaction(prepared.toXDR(), {
       networkPassphrase: NETWORK_PASSPHRASE,
       address: sourceAddress,
@@ -223,6 +231,57 @@ export async function queryContract<T>(
     console.error("Contract query error:", error);
     throw error;
   }
+}
+
+/**
+ * A user's open position in a market, as returned by the contract's
+ * `get_position` read method. Share/collateral amounts are in stroops
+ * (1 token = 10^7 stroops).
+ */
+export interface PositionData {
+  yesShares: bigint;
+  noShares: bigint;
+  lockedCollateral: bigint;
+  totalDeposited: bigint;
+  isSettled: boolean;
+}
+
+/**
+ * Read a user's live position for a market straight from the contract.
+ * Returns `null` when the user has no recorded position (the contract's
+ * `get_position` returns `None`).
+ */
+export async function getPosition(
+  marketId: number,
+  userAddress: string
+): Promise<PositionData | null> {
+  const retval = await queryContract<xdr.ScVal>(MARKET_CONTRACT_ID, "get_position", [
+    u32ToScVal(marketId),
+    addressToScVal(userAddress),
+  ]);
+
+  const native = scValToNative(retval) as
+    | {
+        yes_shares: bigint;
+        no_shares: bigint;
+        locked_collateral: bigint;
+        total_deposited: bigint;
+        is_settled: boolean;
+      }
+    | null
+    | undefined;
+
+  if (native == null) {
+    return null;
+  }
+
+  return {
+    yesShares: BigInt(native.yes_shares),
+    noShares: BigInt(native.no_shares),
+    lockedCollateral: BigInt(native.locked_collateral),
+    totalDeposited: BigInt(native.total_deposited),
+    isSettled: Boolean(native.is_settled),
+  };
 }
 
 /**

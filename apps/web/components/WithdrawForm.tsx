@@ -3,9 +3,13 @@
 import { useState } from "react";
 import { useWallet } from "@/context/WalletContext";
 import { invokeContract, MARKET_CONTRACT_ID, amountToScVal, addressToScVal, u32ToScVal } from "@/lib/contract-client";
+import { TxResult } from "@/components/TxResult";
+import { useToast } from "@/context/ToastContext";
+import { parseContractError } from "@/lib/errors";
 
 export function WithdrawForm() {
   const { address } = useWallet();
+  const { showToast } = useToast();
   const [amount, setAmount] = useState("");
   const [marketId, setMarketId] = useState("1");
   const [isLoading, setIsLoading] = useState(false);
@@ -51,7 +55,9 @@ export function WithdrawForm() {
       setAmount("");
     } catch (err) {
       console.error("Withdrawal error:", err);
-      setError(err instanceof Error ? err.message : "Withdrawal failed.");
+      const reason = parseContractError(err);
+      setError(reason);
+      showToast(reason, "error");
     } finally {
       setIsLoading(false);
     }
