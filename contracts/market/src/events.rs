@@ -792,6 +792,44 @@ pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct MarketOracleUpdated {
+    #[topic]
+    pub market_id: u32,
+    pub admin: Address,
+    pub old_oracle_pubkey: BytesN<32>,
+    pub new_oracle_pubkey: BytesN<32>,
+    pub updated_at: u64,
+}
+
+/// Emit an event when a market's oracle public key is rotated by the admin (#486).
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `market_id` - Market whose oracle key was rotated
+/// * `admin` - Admin address that authorized the rotation
+/// * `old_oracle_pubkey` - Previous oracle public key
+/// * `new_oracle_pubkey` - Newly configured oracle public key
+/// * `updated_at` - Ledger timestamp of the rotation
+pub fn emit_market_oracle_updated(
+    env: &Env,
+    market_id: u32,
+    admin: &Address,
+    old_oracle_pubkey: &BytesN<32>,
+    new_oracle_pubkey: &BytesN<32>,
+    updated_at: u64,
+) {
+    MarketOracleUpdated {
+        market_id,
+        admin: admin.clone(),
+        old_oracle_pubkey: old_oracle_pubkey.clone(),
+        new_oracle_pubkey: new_oracle_pubkey.clone(),
+        updated_at,
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct TreasurySet {
     #[topic]
     pub version: u32,
@@ -843,6 +881,46 @@ pub fn emit_admin_renounced(env: &Env, admin: &Address) {
         version: EVENT_VERSION,
         former_admin: admin.clone(),
         renounced_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ── Fee waiver list (#483) ────────────────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeWaiverAdded {
+    #[topic]
+    pub account: Address,
+    pub admin: Address,
+    pub added_at: u64,
+}
+
+/// Emit an event when the admin adds an address to the fee waiver list.
+pub fn emit_fee_waiver_added(env: &Env, account: &Address, admin: &Address) {
+    FeeWaiverAdded {
+        account: account.clone(),
+        admin: admin.clone(),
+        added_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeWaiverRemoved {
+    #[topic]
+    pub account: Address,
+    pub admin: Address,
+    pub removed_at: u64,
+}
+
+/// Emit an event when the admin removes an address from the fee waiver list.
+pub fn emit_fee_waiver_removed(env: &Env, account: &Address, admin: &Address) {
+    FeeWaiverRemoved {
+        account: account.clone(),
+        admin: admin.clone(),
+        removed_at: env.ledger().timestamp(),
     }
     .publish(env);
 }
