@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use crate::types::{Market, Position};
+use crate::types::{Market, PendingFeeRateChange, Position};
 use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
 /// Bump this constant whenever the storage layout changes in a breaking way.
@@ -72,6 +72,13 @@ pub enum StorageKey {
     /// deposit's external token transfer is in flight so a reentrant call
     /// back into `deposit_collateral` from that transfer is rejected.
     DepositLock,
+    /// Ordered list of every distinct address that has ever held a position
+    /// in a market (Issue #495). Enables paginated settlement of markets with
+    /// too many positions to settle — or even enumerate off-chain — in a
+    /// single transaction.
+    MarketParticipants(u32),
+    /// Pending fee-rate change awaiting its timelock delay (Issue #496).
+    PendingFeeRate,
 }
 
 // --- Version helpers ---
@@ -139,6 +146,34 @@ pub fn set_position(
 pub fn has_position(env: &Env, market_id: u32, user: &Address) -> Result<bool, ContractError> {
     assert_version(env)?;
     Ok(env.storage().persistent().has(&StorageKey::Position(market_id, user.clone())))
+}
+
+// --- Market Participants (Issue #495) ---
+
+/// Return the ordered list of every address that has ever held a position
+/// in `market_id`. Empty if the market has no positions yet.
+pub fn get_market_participants(env: &Env, market_id: u32) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketParticipants(market_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Record `user` as a participant of `market_id` if not already tracked.
+/// Idempotent — safe to call on every position update.
+pub fn add_market_participant(env: &Env, market_id: u32, user: &Address) {
+    let mut participants = get_market_participants(env, market_id);
+    if !participants.iter().any(|p| &p == user) {
+        participants.push_back(user.clone());
+        env.storage()
+            .persistent()
+            .set(&StorageKey::MarketParticipants(market_id), &participants);
+    }
+}
+
+/// Number of distinct addresses that have ever held a position in `market_id`.
+pub fn get_market_participant_count(env: &Env, market_id: u32) -> u32 {
+    get_market_participants(env, market_id).len()
 }
 
 // --- Admin Storage ---
@@ -272,6 +307,20 @@ pub fn get_fee_rate_bps(env: &Env) -> i128 {
 
 pub fn set_fee_rate_bps(env: &Env, fee_rate_bps: i128) {
     env.storage().persistent().set(&StorageKey::FeeRateBps, &fee_rate_bps);
+}
+
+// --- Pending Fee Rate Change / Timelock (Issue #496) ---
+
+pub fn get_pending_fee_rate_change(env: &Env) -> Option<PendingFeeRateChange> {
+    env.storage().persistent().get(&StorageKey::PendingFeeRate)
+}
+
+pub fn set_pending_fee_rate_change(env: &Env, pending: &PendingFeeRateChange) {
+    env.storage().persistent().set(&StorageKey::PendingFeeRate, pending);
+}
+
+pub fn clear_pending_fee_rate_change(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingFeeRate);
 }
 
 

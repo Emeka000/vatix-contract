@@ -55,6 +55,12 @@ pub enum ContractError {
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
     WithdrawCooldownActive = 6,
 
+    /// Deposit attempted into a market that an admin has closed to new deposits.
+    ///
+    /// Set via the `closed_to_deposits` flag; trading, withdrawals, and
+    /// settlement remain unaffected.
+    MarketClosedToDeposits = 7,
+
     // ========== Position Errors (10-19) ==========
     /// User does not have enough collateral locked to perform this operation.
     ///
@@ -132,6 +138,15 @@ pub enum ContractError {
     /// or any special/reserved address.
     InvalidAdmin = 35,
 
+    /// Deposit amount is below the configured minimum deposit.
+    BelowMinDeposit = 36,
+
+    /// Market metadata URI is invalid (e.g. exceeds the maximum length).
+    InvalidMetadataUri = 37,
+
+    /// Proposed fee rate exceeds the configured fee cap.
+    FeeCapExceeded = 38,
+
     // ========== Authorization Errors (40-49) ==========
     /// Caller is not authorized to perform this action.
     ///
@@ -202,6 +217,13 @@ pub enum ContractError {
     /// A reentrant call was detected (e.g. a token contract calling back into
     /// `deposit_collateral` before the initial call has finished).
     ReentrantCall = 100,
+
+    // ========== Timelock Errors (110-119) ==========
+    /// `execute_fee_rate_change` was called but no fee rate change is pending.
+    NoPendingFeeChange = 110,
+
+    /// `execute_fee_rate_change` was called before the timelock delay elapsed.
+    TimelockNotElapsed = 111,
 
 }
 

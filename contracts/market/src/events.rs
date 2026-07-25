@@ -847,6 +847,46 @@ pub fn emit_treasury_set(env: &Env, treasury: &Address) {
     .publish(env);
 }
 
+/// Emitted when an admin proposes a new withdrawal fee rate (Issue #496).
+/// The change does not take effect until `effective_at` and
+/// `execute_fee_rate_change` is called.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeRateChangeProposed {
+    #[topic]
+    pub version: u32,
+    pub new_rate_bps: i128,
+    pub effective_at: u64,
+}
+
+pub fn emit_fee_rate_change_proposed(env: &Env, new_rate_bps: i128, effective_at: u64) {
+    FeeRateChangeProposed {
+        version: EVENT_VERSION,
+        new_rate_bps,
+        effective_at,
+    }
+    .publish(env);
+}
+
+/// Emitted once a previously-proposed fee rate change actually takes effect.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeRateChangeExecuted {
+    #[topic]
+    pub version: u32,
+    pub new_rate_bps: i128,
+    pub executed_at: u64,
+}
+
+pub fn emit_fee_rate_change_executed(env: &Env, new_rate_bps: i128, executed_at: u64) {
+    FeeRateChangeExecuted {
+        version: EVENT_VERSION,
+        new_rate_bps,
+        executed_at,
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminRenounceProposedEvent {
