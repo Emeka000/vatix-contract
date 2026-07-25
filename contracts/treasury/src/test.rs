@@ -568,3 +568,128 @@ fn unpause_rejects_non_admin() {
     let err = s.client.try_unpause(&rando).unwrap_err().unwrap();
     assert_eq!(err, TreasuryError::Unauthorized);
 }
+
+// ── stakeholder fee distribution (#485) ───────────────────────────────────────
+
+#[test]
+fn set_stakeholders_rejects_weights_not_summing_to_10000() {
+    let s = setup();
+    let a = Address::generate(&s.env);
+    let b = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((a, 4_000u32));
+    stakeholders.push_back((b, 4_000u32));
+
+    let err = s
+        .client
+        .try_set_stakeholders(&s.admin, &stakeholders)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::InvalidStakeholderWeights);
+}
+
+#[test]
+fn set_stakeholders_rejects_non_admin() {
+    let s = setup();
+    let rando = Address::generate(&s.env);
+    let a = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((a, 10_000u32));
+
+    let err = s
+        .client
+        .try_set_stakeholders(&rando, &stakeholders)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+}
+
+#[test]
+fn distribute_fees_pays_out_by_share() {
+    let s = setup();
+    fund_treasury(&s, 1_000_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &1_000_000i128);
+
+    let stakeholder_a = Address::generate(&s.env);
+    let stakeholder_b = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder_a.clone(), 7_000u32));
+    stakeholders.push_back((stakeholder_b.clone(), 3_000u32));
+    s.client.set_stakeholders(&s.admin, &stakeholders);
+
+    s.client.distribute_fees(&s.admin, &s.token);
+
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&stakeholder_a), 700_000);
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&stakeholder_b), 300_000);
+    assert_eq!(s.client.token_balance(&s.token), 0);
+    // Cumulative fees stay monotone — distribution only moves the live balance.
+    assert_eq!(s.client.get_cumulative_fees(&s.token), 1_000_000);
+}
+
+#[test]
+fn distribute_fees_rejects_without_stakeholders_configured() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+
+    let err = s
+        .client
+        .try_distribute_fees(&s.admin, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::NoStakeholdersConfigured);
+}
+
+#[test]
+fn distribute_fees_rejects_zero_balance() {
+    let s = setup();
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder, 10_000u32));
+    s.client.set_stakeholders(&s.admin, &stakeholders);
+
+    let err = s
+        .client
+        .try_distribute_fees(&s.admin, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::InsufficientBalance);
+}
+
+#[test]
+fn distribute_fees_rejects_non_admin() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder, 10_000u32));
+    s.client.set_stakeholders(&s.admin, &stakeholders);
+
+    let rando = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_distribute_fees(&rando, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+}
+
+#[test]
+fn distribute_fees_blocked_while_paused() {
+    let s = setup();
+    fund_treasury(&s, 500_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &500_000i128);
+    let stakeholder = Address::generate(&s.env);
+    let mut stakeholders = soroban_sdk::Vec::new(&s.env);
+    stakeholders.push_back((stakeholder, 10_000u32));
+    s.client.set_stakeholders(&s.admin, &stakeholders);
+
+    s.client.pause(&s.admin);
+    let err = s
+        .client
+        .try_distribute_fees(&s.admin, &s.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::ContractPaused);
+}

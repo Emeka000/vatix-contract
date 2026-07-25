@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use crate::types::{Market, Position};
+use crate::types::{Market, PendingFeeRateChange, Position};
 use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
 /// Bump this constant whenever the storage layout changes in a breaking way.
@@ -31,15 +31,17 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// 5. Initialize: `stellar contract invoke ... -- initialize --admin <addr>`
 /// 6. Verify old deployment returns `UpgradeRequired` error
 ///
-/// ## Current version: 3
+/// ## Current version: 4
 ///
 /// ### Version history:
+/// - **v4:** Added per-adapter-type `AdapterEnabled` flag for the Reflector/Pyth
+///   Ed25519 fallback path (#488)
 /// - **v3:** Added Treasury, Outcome Token, Resolution Contract, Threshold Signers
 /// - **v2:** Fixed locked_collateral semantics (#262)
 /// - **v1:** Initial storage layout
 ///
 /// See `STORAGE_MIGRATION_GUIDE.md` and `MIGRATION.md` for detailed history.
-pub const STORAGE_VERSION: u32 = 3;
+pub const STORAGE_VERSION: u32 = 4;
 
 #[contracttype]
 pub enum StorageKey {
@@ -68,22 +70,22 @@ pub enum StorageKey {
     /// Flag indicating the contract is paused for emergency maintenance.
     /// When true, all state-mutating operations are rejected.
     Paused,
+    /// Whether the Reflector/Pyth adapter for a given [`AdapterType`] is live.
+    /// Defaults to `false` (disabled) when unset — see #488: while disabled,
+    /// `resolve_market` falls back to direct Ed25519 verification against the
+    /// market's `oracle_pubkey` instead of routing through the adapter.
+    AdapterEnabled(crate::types::AdapterType),
     /// Reentrancy lock for `deposit_collateral` (Issue #501). Set while a
     /// deposit's external token transfer is in flight so a reentrant call
     /// back into `deposit_collateral` from that transfer is rejected.
     DepositLock,
-    /// Timestamp of the last deposit for a user in a market (issue #413).
-    /// Used to enforce the withdraw cooldown period.
-    LastDepositTime(u32, Address),
-    /// Pending renounce flag for two-step admin renouncement (issue #414).
-    PendingRenounce,
-    /// Hard cap on the withdrawal fee rate in basis points.
-    /// Defaults to MAX_FEE_RATE_BPS when unset.
-    FeeCap,
-    /// Ordered list of addresses exempt from withdrawal fees (issue #483).
-    FeeWaivers,
-    /// Ordered list of all market IDs created on this contract.
-    MarketIds,
+    /// Ordered list of every distinct address that has ever held a position
+    /// in a market (Issue #495). Enables paginated settlement of markets with
+    /// too many positions to settle — or even enumerate off-chain — in a
+    /// single transaction.
+    MarketParticipants(u32),
+    /// Pending fee-rate change awaiting its timelock delay (Issue #496).
+    PendingFeeRate,
 }
 
 // --- Version helpers ---
@@ -151,6 +153,34 @@ pub fn set_position(
 pub fn has_position(env: &Env, market_id: u32, user: &Address) -> Result<bool, ContractError> {
     assert_version(env)?;
     Ok(env.storage().persistent().has(&StorageKey::Position(market_id, user.clone())))
+}
+
+// --- Market Participants (Issue #495) ---
+
+/// Return the ordered list of every address that has ever held a position
+/// in `market_id`. Empty if the market has no positions yet.
+pub fn get_market_participants(env: &Env, market_id: u32) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketParticipants(market_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Record `user` as a participant of `market_id` if not already tracked.
+/// Idempotent — safe to call on every position update.
+pub fn add_market_participant(env: &Env, market_id: u32, user: &Address) {
+    let mut participants = get_market_participants(env, market_id);
+    if !participants.iter().any(|p| &p == user) {
+        participants.push_back(user.clone());
+        env.storage()
+            .persistent()
+            .set(&StorageKey::MarketParticipants(market_id), &participants);
+    }
+}
+
+/// Number of distinct addresses that have ever held a position in `market_id`.
+pub fn get_market_participant_count(env: &Env, market_id: u32) -> u32 {
+    get_market_participants(env, market_id).len()
 }
 
 // --- Admin Storage ---
@@ -289,6 +319,20 @@ pub fn set_fee_rate_bps(env: &Env, fee_rate_bps: i128) {
     env.storage().persistent().set(&StorageKey::FeeRateBps, &fee_rate_bps);
 }
 
+// --- Pending Fee Rate Change / Timelock (Issue #496) ---
+
+pub fn get_pending_fee_rate_change(env: &Env) -> Option<PendingFeeRateChange> {
+    env.storage().persistent().get(&StorageKey::PendingFeeRate)
+}
+
+pub fn set_pending_fee_rate_change(env: &Env, pending: &PendingFeeRateChange) {
+    env.storage().persistent().set(&StorageKey::PendingFeeRate, pending);
+}
+
+pub fn clear_pending_fee_rate_change(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingFeeRate);
+}
+
 
 // --- Pause Storage ---
 
@@ -302,6 +346,27 @@ pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
 }
 
+// --- Oracle Adapter Enabled Flag (#488) ---
+
+/// Whether the given adapter type is live for resolution.
+///
+/// Defaults to `false` (disabled) when never explicitly configured, which is
+/// the correct default today since the Reflector/Pyth on-chain integration is
+/// not yet wired into `resolve_market` (tracked under #139). While disabled,
+/// callers fall back to direct Ed25519 verification — see
+/// [`crate::oracle::verify_market_outcome`].
+pub fn is_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::AdapterEnabled(adapter_type.clone()))
+        .unwrap_or(false)
+}
+
+/// Enable or disable the given adapter type (admin-gated in `lib.rs`).
+pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, enabled: bool) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
 // --- Deposit Reentrancy Lock (Issue #501) ---
 
 /// Check whether the deposit reentrancy lock is currently held.

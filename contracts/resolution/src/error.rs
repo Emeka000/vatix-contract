@@ -16,16 +16,20 @@ pub enum ContractError {
     SignatureExpired = 9,
     /// The provided signature expiry timestamp is invalid (e.g. in the past).
     InvalidSignatureExpiry = 10,
-    /// Proposer's bond is below the required minimum.
-    InsufficientBond = 11,
-    /// Candidate is not in the Challenged state, so appeal is not applicable.
+    /// The underlying market is already resolved (or canceled) and can no
+    /// longer accept a new resolution proposal (Issue #497).
+    MarketAlreadyResolved = 11,
+    /// `appeal` was called on a candidate that is not currently `Challenged`.
     CandidateNotChallenged = 12,
-    /// Candidate has reached the maximum number of appeal rounds.
+    /// A candidate has already been re-proposed `MAX_APPEAL_ROUNDS` times.
     AppealLimitExceeded = 13,
-    /// Collateral amount is invalid (e.g. zero or negative).
-    InvalidCollateral = 14,
-    /// Proposer has insufficient locked collateral for the operation.
+    /// `propose`'s `bond_amount` is below `MIN_BOND_AMOUNT`.
+    InsufficientBond = 14,
+    /// A proposer/challenger does not have enough deposited collateral for
+    /// the requested operation.
     InsufficientCollateral = 15,
+    /// A collateral amount is invalid (e.g. zero or negative).
+    InvalidCollateral = 16,
     Unauthorized = 40,
     NotAdmin = 41,
     AlreadyInitialized = 42,

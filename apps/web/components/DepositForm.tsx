@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { useWallet } from "@/context/WalletContext";
 import { invokeContract, MARKET_CONTRACT_ID, amountToScVal, addressToScVal, u32ToScVal } from "@/lib/contract-client";
+import { TxResult } from "@/components/TxResult";
+import { useToast } from "@/context/ToastContext";
+import { parseContractError } from "@/lib/errors";
 
 interface DepositFormProps {
   /** Pre-select a market. When provided the market ID field is hidden. */
@@ -11,6 +14,7 @@ interface DepositFormProps {
 
 export function DepositForm({ marketId: marketIdProp }: DepositFormProps) {
   const { address } = useWallet();
+  const { showToast } = useToast();
   const [amount, setAmount] = useState("");
   const [marketId, setMarketId] = useState(marketIdProp ?? "1");
   const [isLoading, setIsLoading] = useState(false);
@@ -52,7 +56,9 @@ export function DepositForm({ marketId: marketIdProp }: DepositFormProps) {
       setAmount("");
     } catch (err) {
       console.error("Deposit error:", err);
-      setError(err instanceof Error ? err.message : "Deposit failed.");
+      const reason = parseContractError(err);
+      setError(reason);
+      showToast(reason, "error");
     } finally {
       setIsLoading(false);
     }

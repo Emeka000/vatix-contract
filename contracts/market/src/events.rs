@@ -847,6 +847,46 @@ pub fn emit_treasury_set(env: &Env, treasury: &Address) {
     .publish(env);
 }
 
+/// Emitted when an admin proposes a new withdrawal fee rate (Issue #496).
+/// The change does not take effect until `effective_at` and
+/// `execute_fee_rate_change` is called.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeRateChangeProposed {
+    #[topic]
+    pub version: u32,
+    pub new_rate_bps: i128,
+    pub effective_at: u64,
+}
+
+pub fn emit_fee_rate_change_proposed(env: &Env, new_rate_bps: i128, effective_at: u64) {
+    FeeRateChangeProposed {
+        version: EVENT_VERSION,
+        new_rate_bps,
+        effective_at,
+    }
+    .publish(env);
+}
+
+/// Emitted once a previously-proposed fee rate change actually takes effect.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeRateChangeExecuted {
+    #[topic]
+    pub version: u32,
+    pub new_rate_bps: i128,
+    pub executed_at: u64,
+}
+
+pub fn emit_fee_rate_change_executed(env: &Env, new_rate_bps: i128, executed_at: u64) {
+    FeeRateChangeExecuted {
+        version: EVENT_VERSION,
+        new_rate_bps,
+        executed_at,
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminRenounceProposedEvent {
@@ -885,6 +925,29 @@ pub fn emit_admin_renounced(env: &Env, admin: &Address) {
     .publish(env);
 }
 
+// ── Oracle adapter enable/disable (#488) ──────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct OracleAdapterConfigured {
+    #[topic]
+    pub adapter_type: crate::types::AdapterType,
+    pub enabled: bool,
+    pub configured_at: u64,
+}
+
+/// Emitted when the admin enables/disables the Reflector or Pyth adapter via
+/// `set_adapter_enabled`. While an adapter is disabled, resolution falls back
+/// to direct Ed25519 verification — see `oracle::verify_market_outcome`.
+pub fn emit_oracle_adapter_configured(
+    env: &Env,
+    adapter_type: crate::types::AdapterType,
+    enabled: bool,
+) {
+    OracleAdapterConfigured {
+        adapter_type,
+        enabled,
+        configured_at: env.ledger().timestamp(),
 // ── Fee waiver list (#483) ────────────────────────────────────────────────────
 
 #[contractevent]

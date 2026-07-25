@@ -271,6 +271,93 @@ pub fn batch_settle_positions(
     Ok(total_payout)
 }
 
+/// Settle a bounded page of a market's tracked participants (Issue #495).
+///
+/// Markets with more positions than fit comfortably in one transaction's
+/// resource budget can be fully settled by repeatedly calling this with
+/// `start_index` advanced to the returned `next_index`, until the returned
+/// `is_complete` flag is `true`. Unlike [`batch_settle_positions`], the
+/// caller does not need to know or supply the list of participant
+/// addresses — it is read from the on-chain participant registry that
+/// [`crate::MarketContract::update_position`] maintains.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `market_id` - Market identifier (must be resolved)
+/// * `start_index` - Index into the market's participant list to resume from
+/// * `limit` - Maximum number of participants to process in this call
+///
+/// # Returns
+/// `(total_payout_this_page, next_index, is_complete)` — `is_complete` is
+/// `true` once `next_index` has reached the end of the participant list.
+///
+/// # Errors
+/// - [`ContractError::MarketNotFound`] – the market does not exist
+/// - [`ContractError::MarketNotResolved`] – the market is not resolved
+pub fn settle_positions_page(
+    env: &Env,
+    market_id: u32,
+    start_index: u32,
+    limit: u32,
+) -> Result<(i128, u32, bool), ContractError> {
+    let market = storage::get_market(env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+    if market.status != MarketStatus::Resolved {
+        return Err(ContractError::MarketNotResolved);
+    }
+
+    let participants = storage::get_market_participants(env, market_id);
+    let total = participants.len();
+
+    if start_index >= total {
+        return Ok((0, total, true));
+    }
+
+    let end_index = start_index.saturating_add(limit).min(total);
+
+    let mut total_payout: i128 = 0;
+    let mut settled_users: Vec<Address> = Vec::new(env);
+    let mut settled_payouts: Vec<i128> = Vec::new(env);
+
+    for i in start_index..end_index {
+        let user = participants.get(i).expect("index within bounds");
+
+        let Ok(Some(mut position)) = storage::get_position(env, market_id, &user) else {
+            continue;
+        };
+
+        let Ok(payout) = compute_settlement(&mut position, &market) else {
+            continue;
+        };
+
+        if storage::set_position(env, market_id, &user, &position).is_err() {
+            continue;
+        }
+
+        if payout > 0 {
+            let contract_address = env.current_contract_address();
+            let token_client = TokenClient::new(env, &market.collateral_token);
+            token_client.transfer(&contract_address, &user, &payout);
+        }
+
+        total_payout = total_payout.saturating_add(payout);
+        settled_users.push_back(user);
+        settled_payouts.push_back(payout);
+    }
+
+    if !settled_users.is_empty() {
+        let settled_at = env.ledger().timestamp();
+        crate::events::emit_positions_batch_settled(
+            env,
+            market_id,
+            &settled_users,
+            &settled_payouts,
+            settled_at,
+        );
+    }
+
+    Ok((total_payout, end_index, end_index >= total))
+}
+
 /// Calculate what a user would receive if they settled now
 ///
 /// # Arguments

@@ -85,6 +85,17 @@ pub struct Position {
     pub is_settled: bool,
 }
 
+/// A fee-rate change awaiting its timelock delay before it can take effect
+/// (Issue #496). Only one change may be pending at a time; proposing a new
+/// one overwrites any earlier pending change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingFeeRateChange {
+    pub new_rate_bps: i128,
+    /// Ledger timestamp at or after which `execute_fee_rate_change` may apply this change.
+    pub effective_at: u64,
+}
+
 impl Position {
     /// Create an empty position for a user in a market.
     /// Used when a position has not been previously recorded in storage.

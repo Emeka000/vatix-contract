@@ -1,5 +1,19 @@
 use soroban_sdk::{contracttype, Address, BytesN, String};
 
+/// Local mirror of `vatix_market::types::MarketStatus` (Issue #497).
+///
+/// The resolution crate cannot depend on the market crate directly (the
+/// market crate already depends on this one), so this enum must be kept in
+/// variant-for-variant sync with the market contract's `MarketStatus` for
+/// cross-contract calls to `get_market_status` to decode correctly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum MarketStatus {
+    Active,
+    Resolved,
+    Canceled,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum CandidateStatus {

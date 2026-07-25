@@ -114,8 +114,22 @@ pub fn validate_oracle_authorization(
 /// Verify that the market outcome is valid according to the configured oracle adapter.
 ///
 /// For `AdapterType::Ed25519`, this verifies the provided signature against the
-/// market's `oracle_pubkey`. Other adapter types are not yet implemented and
-/// currently return `UnauthorizedOracle` to prevent accidental silent success.
+/// market's `oracle_pubkey`.
+///
+/// For `AdapterType::Reflector` / `AdapterType::Pyth` the full on-chain adapter
+/// integration (price fetch + comparison) is tracked separately under #139 and
+/// is not wired into this dispatch. Rather than leaving markets configured with
+/// one of these adapters permanently unresolvable, we check the per-adapter
+/// `enabled` flag (#488):
+/// - If the adapter has been explicitly marked enabled by the admin, we still
+///   fail closed with `UnauthorizedOracle` — this dispatch has no code path to
+///   actually query Reflector/Pyth yet, so silently succeeding would be unsafe.
+/// - If the adapter is disabled (the default), we fall back to verifying
+///   `proof` as a direct Ed25519 signature over the same canonical payload
+///   (`construct_oracle_message`) against the market's `oracle_pubkey`, using
+///   the identical [`verify_oracle_signature`] path as `AdapterType::Ed25519`.
+///   This lets a market keep resolving via the trusted single-signer key while
+///   its richer oracle adapter is unavailable, instead of getting stuck.
 pub fn verify_market_outcome(
     env: &Env,
     market_id: u32,
@@ -126,7 +140,14 @@ pub fn verify_market_outcome(
 ) -> Result<(), ContractError> {
     match adapter_type {
         AdapterType::Ed25519 => verify_oracle_signature(env, market_id, outcome, proof, &market.oracle_pubkey),
-        AdapterType::Reflector | AdapterType::Pyth => Err(ContractError::UnauthorizedOracle),
+        AdapterType::Reflector | AdapterType::Pyth => {
+            if crate::storage::is_adapter_enabled(env, &adapter_type) {
+                Err(ContractError::UnauthorizedOracle)
+            } else {
+                // Adapter disabled/unavailable — fall back to raw Ed25519 verification.
+                verify_oracle_signature(env, market_id, outcome, proof, &market.oracle_pubkey)
+            }
+        }
     }
 }
 
@@ -575,5 +596,98 @@ mod threshold_tests {
             verify_threshold_signatures(&env, 42, false, &signers, &sigs, 1),
             Ok(())
         );
+    }
+}
+
+#[cfg(test)]
+mod adapter_fallback_tests {
+    //! Tests for the Reflector/Pyth → Ed25519 fallback dispatch (#488).
+    use super::*;
+    use crate::types::{AdapterType, Market, MarketStatus};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn make_reflector_market(env: &Env, oracle_pubkey: BytesN<32>) -> Market {
+        Market {
+            id: 1,
+            question: String::from_str(env, "Reflector fallback test"),
+            end_time: 1000,
+            oracle_pubkey,
+            status: MarketStatus::Active,
+            result: None,
+            creator: Address::generate(env),
+            created_at: 0,
+            collateral_token: Address::generate(env),
+            price_bps: 5_000,
+            resolver: None,
+            resolved_at: None,
+            adapter_type: AdapterType::Reflector,
+            outcome_count: 2,
+            closed_to_deposits: false,
+        }
+    }
+
+    #[test]
+    fn reflector_disabled_by_default_falls_back_to_ed25519() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market_id = 1u32;
+        let outcome = true;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let message = construct_oracle_message(&env, market_id, outcome);
+        let signature = signing_key.sign(message.to_array().as_slice());
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+        let sig = BytesN::from_array(&env, &signature.to_bytes());
+        let market = make_reflector_market(&env, pubkey);
+
+        env.as_contract(&contract_id, || {
+            // No admin has enabled the Reflector adapter, so it defaults to
+            // disabled and resolution falls back to direct Ed25519 verification.
+            let result =
+                verify_market_outcome(&env, market_id, &market, AdapterType::Reflector, outcome, &sig);
+            assert_eq!(result, Ok(()));
+        });
+    }
+
+    #[test]
+    fn reflector_fallback_rejects_invalid_signature() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = make_reflector_market(&env, BytesN::from_array(&env, &[1u8; 32]));
+
+        env.as_contract(&contract_id, || {
+            let result = verify_market_outcome(
+                &env,
+                1,
+                &market,
+                AdapterType::Reflector,
+                true,
+                &BytesN::from_array(&env, &[0u8; 64]),
+            );
+            assert_eq!(result, Err(ContractError::InvalidSignature));
+        });
+    }
+
+    #[test]
+    fn reflector_enabled_still_rejects_since_adapter_not_wired() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = make_reflector_market(&env, BytesN::from_array(&env, &[1u8; 32]));
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_adapter_enabled(&env, &AdapterType::Reflector, true);
+            let result = verify_market_outcome(
+                &env,
+                1,
+                &market,
+                AdapterType::Reflector,
+                true,
+                &BytesN::from_array(&env, &[0u8; 64]),
+            );
+            assert_eq!(result, Err(ContractError::UnauthorizedOracle));
+        });
     }
 }

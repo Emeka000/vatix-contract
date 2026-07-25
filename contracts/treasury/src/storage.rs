@@ -5,7 +5,13 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 
 /// Bump this constant whenever the treasury storage layout changes in a breaking way.
 /// `initialize()` writes this value so that future migrations can detect stale deployments.
-pub const STORAGE_VERSION: u32 = 1;
+///
+/// ## Version history
+/// - **v2:** Completed the multi-market `AuthorizedMarkets` registry
+///   (`add_market`/`remove_market`/`list_markets`/`is_authorized_market`) and
+///   added the `Stakeholders` fee-distribution list (#485).
+/// - **v1:** Initial storage layout.
+pub const STORAGE_VERSION: u32 = 2;
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -25,6 +31,9 @@ pub enum StorageKey {
     TotalCollected,
     /// When `true`, `collect_fee` and `withdraw_fees` are blocked until unpaused.
     Paused,
+    /// Ordered list of `(stakeholder, share_bps)` pairs used by `distribute_fees`
+    /// (#485). `share_bps` values must sum to exactly 10_000.
+    Stakeholders,
     /// Registry of every distinct token mint that has ever had a fee routed
     /// through `collect_fee` (#484). Lets callers enumerate which tokens hold
     /// a balance without needing prior knowledge of the token address.
@@ -43,6 +52,8 @@ pub fn get_version(env: &Env) -> Option<u32> {
     env.storage().instance().get(&StorageKey::StorageVersion)
 }
 
+/// Guard every storage accessor against a stale/pre-migration deployment.
+pub fn assert_version(env: &Env) -> Result<(), TreasuryError> {
 /// Guard used by every versioned storage accessor: rejects reads/writes
 /// against a deployment whose on-chain schema doesn't match this build.
 fn assert_version(env: &Env) -> Result<(), TreasuryError> {
@@ -77,6 +88,17 @@ pub fn set_admin(env: &Env, admin: &Address) {
 // touched for that change — `get_authorized_markets`/`is_authorized_market`
 // previously referenced a non-existent singular `AuthorizedMarket` key.
 
+/// Return the full list of markets currently authorized to call `collect_fee`.
+///
+/// Returns an empty list (rather than erroring) when nothing has been
+/// registered yet, mirroring the market contract's `Vec`-storage convention.
+pub fn get_authorized_markets(env: &Env) -> Result<Vec<Address>, TreasuryError> {
+    assert_version(env)?;
+    Ok(env
+        .storage()
+        .instance()
+        .get(&StorageKey::AuthorizedMarkets)
+        .unwrap_or_else(|| Vec::new(env)))
 pub fn get_authorized_markets(env: &Env) -> Vec<Address> {
     env.storage()
         .instance()
@@ -90,8 +112,18 @@ pub fn set_authorized_markets(env: &Env, markets: &Vec<Address>) {
         .set(&StorageKey::AuthorizedMarkets, markets);
 }
 
+/// Return the first registered market — kept for backwards compatibility with
+/// the original single-market `market_contract()` getter.
+pub fn get_authorized_market(env: &Env) -> Result<Address, TreasuryError> {
+    let markets = get_authorized_markets(env)?;
+    markets.get(0).ok_or(TreasuryError::NotInitialized)
+}
+
 pub fn is_authorized_market(env: &Env, market: &Address) -> bool {
-    get_authorized_markets(env).contains(market)
+    match get_authorized_markets(env) {
+        Ok(markets) => markets.contains(market),
+        Err(_) => false,
+    }
 }
 
 // ── Token balance (current, decreasable on withdrawal) ────────────────────────
@@ -176,4 +208,23 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&StorageKey::Paused, &paused);
+}
+
+// ── Stakeholder revenue share (#485) ──────────────────────────────────────────
+
+/// Return the configured `(stakeholder, share_bps)` list, or an empty list if
+/// `set_stakeholders` has never been called.
+pub fn get_stakeholders(env: &Env) -> Result<Vec<(Address, u32)>, TreasuryError> {
+    assert_version(env)?;
+    Ok(env
+        .storage()
+        .instance()
+        .get(&StorageKey::Stakeholders)
+        .unwrap_or_else(|| Vec::new(env)))
+}
+
+pub fn set_stakeholders(env: &Env, stakeholders: &Vec<(Address, u32)>) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::Stakeholders, stakeholders);
 }
