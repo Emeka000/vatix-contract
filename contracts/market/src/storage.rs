@@ -68,6 +68,8 @@ pub enum StorageKey {
     /// Flag indicating the contract is paused for emergency maintenance.
     /// When true, all state-mutating operations are rejected.
     Paused,
+    /// Admin-managed list of addresses exempt from withdrawal fees (#483).
+    FeeWaivers,
 }
 
 // --- Version helpers ---
@@ -281,6 +283,54 @@ pub fn is_paused(env: &Env) -> bool {
 /// Pause or unpause the contract (emergency halt).
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
+}
+
+// --- Fee Waiver List Storage (#483) ---
+//
+// Admin-managed allowlist of addresses that are exempt from withdrawal fees,
+// mirroring the `ThresholdSigners` list pattern used elsewhere in this module.
+
+/// Return the current fee waiver list (empty if never configured).
+pub fn get_fee_waivers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::FeeWaivers)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn set_fee_waivers(env: &Env, waivers: &Vec<Address>) {
+    env.storage().persistent().set(&StorageKey::FeeWaivers, waivers);
+}
+
+/// Whether `account` is currently exempt from withdrawal fees.
+pub fn is_fee_waived(env: &Env, account: &Address) -> bool {
+    get_fee_waivers(env).contains(account)
+}
+
+/// Add `account` to the fee waiver list. Idempotent: adding an
+/// already-waived address is a no-op.
+pub fn add_fee_waiver(env: &Env, account: &Address) {
+    let mut waivers = get_fee_waivers(env);
+    if !waivers.contains(account) {
+        waivers.push_back(account.clone());
+        set_fee_waivers(env, &waivers);
+    }
+}
+
+/// Remove `account` from the fee waiver list. Idempotent: removing an
+/// address that is not present is a no-op.
+pub fn remove_fee_waiver(env: &Env, account: &Address) {
+    let waivers = get_fee_waivers(env);
+    if !waivers.contains(account) {
+        return;
+    }
+    let mut updated = Vec::new(env);
+    for addr in waivers.iter() {
+        if addr != *account {
+            updated.push_back(addr);
+        }
+    }
+    set_fee_waivers(env, &updated);
 }
 
 #[cfg(test)]

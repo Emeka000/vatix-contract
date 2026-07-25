@@ -72,9 +72,10 @@ pub fn withdraw_unused_collateral(
     }
 
     // 5. Compute the fee (single path, no duplication).
+    // Addresses on the admin-managed fee waiver list pay no withdrawal fee (#483).
     let fee_rate_bps = storage::get_fee_rate_bps(&env);
     validation::validate_fee_rate_bps(fee_rate_bps)?;
-    let fee_amount = if fee_rate_bps > 0 {
+    let fee_amount = if fee_rate_bps > 0 && !storage::is_fee_waived(&env, &user) {
         validation::calculate_fee(amount, fee_rate_bps)?
     } else {
         0
