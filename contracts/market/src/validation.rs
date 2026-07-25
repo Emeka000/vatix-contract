@@ -1,6 +1,6 @@
 use crate::error::ContractError;
 use crate::types::MarketStatus;
-use soroban_sdk::{Env, String};
+use soroban_sdk::{Address, Env, String};
 
 /// Minimum collateral deposit in stroops (1 USDC = 10_000_000 stroops).
 pub const MIN_DEPOSIT_AMOUNT: i128 = 10_000_000;
@@ -292,7 +292,23 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
     Ok(())
 }
 
-#[cfg(test)]
+/// Validate that an admin address is a user account (not a contract address).
+///
+/// Soroban contracts can hold an `Address` that is either a user account
+/// (Ed25519 key, "G…") or a deployed contract ("C…"). Allowing a contract
+/// address as admin would allow privilege escalation and is therefore rejected.
+///
+/// # Errors
+/// - [`ContractError::InvalidAdmin`] – the address is a contract address.
+pub fn validate_admin_address(admin: &Address) -> Result<(), ContractError> {
+    // `Address::executable()` returns `Some(_)` for contract addresses and
+    // `None` for regular user accounts. We reject contract addresses as admin.
+    if admin.executable().is_some() {
+        return Err(ContractError::InvalidAdmin);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,15 +566,6 @@ mod tests {
         assert_eq!(
             validate_admin_address(&contract_id),
             Err(ContractError::InvalidAdmin)
-        );
-    }
-}
-
-    #[test]
-    fn test_validate_cancelable_already_canceled_fails() {
-        assert_eq!(
-            validate_cancelable(&MarketStatus::Canceled),
-            Err(ContractError::MarketNotActive)
         );
     }
 

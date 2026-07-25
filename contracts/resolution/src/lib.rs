@@ -38,7 +38,7 @@ mod test;
 
 use crate::error::ContractError;
 use crate::types::{CandidateStatus, ResolutionCandidate, ResolutionConfig};
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
+use soroban_sdk::{contract, contractimpl, token::Client as TokenClient, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
 
 const MIN_CHALLENGE_WINDOW_SECONDS: u64 = 60;
@@ -62,26 +62,26 @@ pub struct ResolutionContract;
 impl ResolutionContract {
     /// Register the resolution lifecycle contract with its factory and market.
     ///
-    /// `default_challenge_window_seconds` is stored as the contract-wide default.
+    /// `challenge_window_secs` is stored as the contract-wide default.
     pub fn initialize(
         env: Env,
         admin: Address,
         factory: Address,
         market_contract: Address,
-        default_challenge_window_seconds: u64,
+        challenge_window_secs: u64,
     ) -> Result<(), ContractError> {
         admin.require_auth();
         if storage::has_config(&env) {
             return Err(ContractError::AlreadyInitialized);
         }
-        validate_challenge_window(default_challenge_window_seconds)?;
+        validate_challenge_window(challenge_window_secs)?;
         storage::set_config(
             &env,
             &ResolutionConfig {
                 admin,
                 factory: factory.clone(),
                 market_contract: market_contract.clone(),
-                default_challenge_window_seconds,
+                challenge_window_secs,
             },
         );
         events::emit_resolution_registered(&env, &factory, &market_contract);
@@ -89,7 +89,7 @@ impl ResolutionContract {
     }
 
     pub fn get_default_challenge_window(env: Env) -> u64 {
-        storage::get_config(&env).default_challenge_window_seconds
+        storage::get_config(&env).challenge_window_secs
     }
 
     pub fn set_default_challenge_window(
@@ -101,7 +101,7 @@ impl ResolutionContract {
         let mut config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         validate_challenge_window(seconds)?;
-        config.default_challenge_window_seconds = seconds;
+        config.challenge_window_secs = seconds;
         storage::set_config(&env, &config);
         Ok(())
     }
@@ -401,7 +401,7 @@ impl ResolutionContract {
         if amount <= 0 {
             return Err(ContractError::InvalidCollateral);
         }
-        token::Client::new(&env, &collateral_token).transfer(
+        TokenClient::new(&env, &collateral_token).transfer(
             &proposer,
             &env.current_contract_address(),
             &amount,
@@ -427,7 +427,7 @@ impl ResolutionContract {
             return Err(ContractError::InsufficientCollateral);
         }
         storage::set_proposer_collateral(&env, &proposer, 0);
-        token::Client::new(&env, &collateral_token).transfer(
+        TokenClient::new(&env, &collateral_token).transfer(
             &env.current_contract_address(),
             &recipient,
             &amount,
