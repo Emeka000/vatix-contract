@@ -60,3 +60,33 @@ pub fn emit_token_burned(
     }
     .publish(env);
 }
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenTransferredEvent {
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub from: Address,
+    pub to: Address,
+    pub kind: TokenKind,
+    pub amount: i128,
+}
+
+pub fn emit_token_transferred(
+    env: &Env,
+    market_id: u32,
+    from: &Address,
+    to: &Address,
+    kind: TokenKind,
+    amount: i128,
+) {
+    TokenTransferredEvent {
+        market_id,
+        from: from.clone(),
+        to: to.clone(),
+        kind,
+        amount,
+    }
+    .publish(env);
+}

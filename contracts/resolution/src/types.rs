@@ -24,6 +24,12 @@ pub struct ResolutionCandidate {
     pub challenged_by: Option<Address>,
     pub challenge_uri: Option<String>,
     pub finalized_at: Option<u64>,
+    /// Number of times this candidate has been re-proposed via `appeal`
+    /// after a challenge. Capped at `MAX_APPEAL_ROUNDS`.
+    pub appeal_round: u32,
+    /// Bond posted by the proposer (in the market's collateral token),
+    /// locked in this contract and refunded to the proposer on finalize.
+    pub bond_amount: i128,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

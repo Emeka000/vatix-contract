@@ -54,19 +54,16 @@ fn validate_payout(payout: i128) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Execute settlement for a position and return payout
+/// Core settlement calculation shared by both the single-position
+/// (`settle_position`) and batch (`batch_settle_positions`) paths.
 ///
-/// This function:
-/// 1. Validates settlement eligibility
-/// 2. Calculates payout
-/// 3. Validates payout amount
-/// 4. Marks position as settled
-/// 5. Returns payout amount
-pub fn execute_settlement(
-    env: &Env,
-    position: &mut Position,
-    market: &Market,
-) -> Result<i128, ContractError> {
+/// Validates eligibility, computes the payout, and marks the position
+/// settled — but does not emit any events. This lets callers choose
+/// per-position event emission (`execute_settlement`, used by the
+/// single-user path) or a single aggregated event for a whole batch
+/// (`batch_settle_positions`, Issue #499) without duplicating the
+/// settlement math.
+fn compute_settlement(position: &mut Position, market: &Market) -> Result<i128, ContractError> {
     validate_settlement_eligibility(position, market)?;
 
     // Support a "no-winner" refund path: when a market is marked as
@@ -82,6 +79,25 @@ pub fn execute_settlement(
     validate_payout(payout)?;
 
     position.is_settled = true;
+
+    Ok(payout)
+}
+
+/// Execute settlement for a position and return payout
+///
+/// This function:
+/// 1. Validates settlement eligibility
+/// 2. Calculates payout
+/// 3. Validates payout amount
+/// 4. Marks position as settled
+/// 5. Emits `PositionUpdated` and `PositionSettled` for this single position
+/// 6. Returns payout amount
+pub fn execute_settlement(
+    env: &Env,
+    position: &mut Position,
+    market: &Market,
+) -> Result<i128, ContractError> {
+    let payout = compute_settlement(position, market)?;
 
     // Emit PositionUpdated so indexers observe the share balance zeroing out
     // on settlement (yes_shares and no_shares are consumed; locked_collateral
@@ -146,6 +162,20 @@ pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128
     // payout, marks the position settled, and emits the PositionSettled event.
     let payout = execute_settlement(env, &mut position, &market)?;
 
+    // Merge (retire) this position's outcome tokens now that they have been
+    // redeemed for the collateral payout above. Both the winning and losing
+    // side balances are burned back into nothing so a settled position's
+    // outcome tokens can never be transferred or redeemed a second time.
+    if let Some(outcome_token_address) = storage::get_outcome_token_contract(env) {
+        let token_client = OutcomeTokenContractClient::new(env, &outcome_token_address);
+        if position.yes_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::Yes, &position.yes_shares);
+        }
+        if position.no_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::No, &position.no_shares);
+        }
+    }
+
     // Persist the settled position before paying out.
     storage::set_position(env, market_id, user, &position)?;
 
@@ -161,10 +191,16 @@ pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128
 
 /// Settle multiple users' positions in a single call for a resolved market.
 ///
-/// Iterates over `users`, calling [`settle_position`] for each. Positions that
-/// are already settled, not found, or encounter any other per-user error are
-/// skipped — the batch continues and the total payout across all successfully
-/// settled positions is returned.
+/// Positions that are already settled, not found, or encounter any other
+/// per-user error are skipped — the batch continues and the total payout
+/// across all successfully settled positions is returned.
+///
+/// Unlike calling [`settle_position`] N times (which emits `PositionUpdated`
+/// + `PositionSettled` per user, i.e. 2N events), this settles each position
+/// via the event-free [`compute_settlement`] core and emits exactly one
+/// aggregated `PositionsBatchSettled` event covering every user actually
+/// settled in this call (Issue #499) — cutting per-position event-emission
+/// overhead for bulk settlement.
 ///
 /// # Arguments
 /// * `env` - Contract environment
@@ -190,14 +226,17 @@ pub fn batch_settle_positions(
     }
 
     let mut total_payout: i128 = 0;
+    let mut settled_users: Vec<Address> = Vec::new(env);
+    let mut settled_payouts: Vec<i128> = Vec::new(env);
 
     for user in users.iter() {
         let Ok(Some(mut position)) = storage::get_position(env, market_id, &user) else {
             continue;
         };
 
-        // Skip already-settled positions and any unexpected state.
-        let Ok(payout) = execute_settlement(env, &mut position, &market) else {
+        // Skip already-settled positions and any unexpected state. No event
+        // is emitted per-user here; one aggregated event covers the batch.
+        let Ok(payout) = compute_settlement(&mut position, &market) else {
             continue;
         };
 
@@ -213,6 +252,19 @@ pub fn batch_settle_positions(
         }
 
         total_payout = total_payout.saturating_add(payout);
+        settled_users.push_back(user);
+        settled_payouts.push_back(payout);
+    }
+
+    if !settled_users.is_empty() {
+        let settled_at = env.ledger().timestamp();
+        crate::events::emit_positions_batch_settled(
+            env,
+            market_id,
+            &settled_users,
+            &settled_payouts,
+            settled_at,
+        );
     }
 
     Ok(total_payout)

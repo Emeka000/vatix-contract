@@ -34,6 +34,10 @@ pub enum StorageKey {
     /// Ordered list of `(stakeholder, share_bps)` pairs used by `distribute_fees`
     /// (#485). `share_bps` values must sum to exactly 10_000.
     Stakeholders,
+    /// Registry of every distinct token mint that has ever had a fee routed
+    /// through `collect_fee` (#484). Lets callers enumerate which tokens hold
+    /// a balance without needing prior knowledge of the token address.
+    FeeTokens,
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────
@@ -50,6 +54,9 @@ pub fn get_version(env: &Env) -> Option<u32> {
 
 /// Guard every storage accessor against a stale/pre-migration deployment.
 pub fn assert_version(env: &Env) -> Result<(), TreasuryError> {
+/// Guard used by every versioned storage accessor: rejects reads/writes
+/// against a deployment whose on-chain schema doesn't match this build.
+fn assert_version(env: &Env) -> Result<(), TreasuryError> {
     if get_version(env) != Some(STORAGE_VERSION) {
         return Err(TreasuryError::UpgradeRequired);
     }
@@ -76,6 +83,10 @@ pub fn set_admin(env: &Env, admin: &Address) {
 }
 
 // ── Authorized markets registry ───────────────────────────────────────────────
+//
+// Note: fixed alongside #484 (multi-token fee collection) since this file was
+// touched for that change — `get_authorized_markets`/`is_authorized_market`
+// previously referenced a non-existent singular `AuthorizedMarket` key.
 
 /// Return the full list of markets currently authorized to call `collect_fee`.
 ///
@@ -88,6 +99,11 @@ pub fn get_authorized_markets(env: &Env) -> Result<Vec<Address>, TreasuryError> 
         .instance()
         .get(&StorageKey::AuthorizedMarkets)
         .unwrap_or_else(|| Vec::new(env)))
+pub fn get_authorized_markets(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&StorageKey::AuthorizedMarkets)
+        .unwrap_or_else(|| Vec::new(env))
 }
 
 pub fn set_authorized_markets(env: &Env, markets: &Vec<Address>) {
@@ -142,6 +158,26 @@ pub fn set_cumulative_fees(env: &Env, token: &Address, amount: i128) {
     env.storage()
         .persistent()
         .set(&StorageKey::CumulativeFees(token.clone()), &amount);
+}
+
+// ── Fee token registry (#484: multi-token fee collection support) ────────────
+
+/// Return every distinct token mint that has ever had a fee collected for it.
+pub fn get_fee_tokens(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&StorageKey::FeeTokens)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Record `token` in the fee-token registry if it hasn't been seen before.
+/// Idempotent: re-registering an already-known token is a no-op.
+pub fn register_fee_token(env: &Env, token: &Address) {
+    let mut tokens = get_fee_tokens(env);
+    if !tokens.contains(token) {
+        tokens.push_back(token.clone());
+        env.storage().instance().set(&StorageKey::FeeTokens, &tokens);
+    }
 }
 
 // ── Global cumulative (sum across all tokens, monotone) ───────────────────────

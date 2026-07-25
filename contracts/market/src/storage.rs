@@ -75,6 +75,10 @@ pub enum StorageKey {
     /// `resolve_market` falls back to direct Ed25519 verification against the
     /// market's `oracle_pubkey` instead of routing through the adapter.
     AdapterEnabled(crate::types::AdapterType),
+    /// Reentrancy lock for `deposit_collateral` (Issue #501). Set while a
+    /// deposit's external token transfer is in flight so a reentrant call
+    /// back into `deposit_collateral` from that transfer is rejected.
+    DepositLock,
 }
 
 // --- Version helpers ---
@@ -311,6 +315,21 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
     env.storage()
         .persistent()
         .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
+// --- Deposit Reentrancy Lock (Issue #501) ---
+
+/// Check whether the deposit reentrancy lock is currently held.
+pub fn is_deposit_locked(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::DepositLock)
+        .unwrap_or(false)
+}
+
+/// Acquire or release the deposit reentrancy lock.
+pub fn set_deposit_locked(env: &Env, locked: bool) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::DepositLock, &locked);
 }
 
 #[cfg(test)]

@@ -31,6 +31,25 @@
 //! | `TokenBalance(Address)`   | `i128`                | Current custodied balance (decreasable)   |
 //! | `CumulativeFees(Address)` | `i128`                | Historical total collected (monotone)     |
 //! | `Stakeholders`            | `Vec<(Address, u32)>` | Revenue-share list, `share_bps` sums to 10_000 (#485) |
+//! | Operation                        | Who may call              |
+//! |-----------------------------------|---------------------------|
+//! | `initialize`                      | anyone (once)             |
+//! | `collect_fee`                      | registered market contract|
+//! | `withdraw_fees`                    | admin                     |
+//! | `add_market` / `remove_market`     | admin                     |
+//! | `set_market_contract`              | admin                     |
+//! | Getters                            | anyone                    |
+//!
+//! ## Storage layout
+//!
+//! | Key                       | Type            | Description                              |
+//! |---------------------------|-----------------|-------------------------------------------|
+//! | `StorageVersion`          | `u32`           | Schema version guard                     |
+//! | `Admin`                   | `Address`       | Protocol admin                           |
+//! | `AuthorizedMarkets`       | `Vec<Address>`  | Market contracts allowed to call `collect_fee` |
+//! | `TokenBalance(Address)`   | `i128`          | Current custodied balance per token (decreasable) |
+//! | `CumulativeFees(Address)` | `i128`          | Historical total collected per token (monotone)   |
+//! | `FeeTokens`               | `Vec<Address>`  | Registry of every token ever collected (#484)     |
 
 pub mod error;
 pub mod events;
@@ -65,6 +84,7 @@ impl TreasuryContract {
         storage::set_admin(&env, &admin);
         let mut markets: Vec<Address> = Vec::new(&env);
         markets.push_back(market_contract.clone());
+        let markets = soroban_sdk::vec![&env, market_contract.clone()];
         storage::set_authorized_markets(&env, &markets);
         storage::set_version(&env);
         events::emit_treasury_initialized(&env, &admin, &market_contract);
@@ -74,6 +94,11 @@ impl TreasuryContract {
     // ── Fee collection ─────────────────────────────────────────────────────────
 
     /// Record a protocol fee transferred from any registered market contract.
+    ///
+    /// `token` identifies which token mint the fee was paid in (#484): the
+    /// treasury custodies an independent balance per token, so markets using
+    /// different collateral tokens can all route fees through the same
+    /// treasury deployment without their balances colliding.
     pub fn collect_fee(
         env: Env,
         caller: Address,
@@ -95,6 +120,10 @@ impl TreasuryContract {
         if fee_amount <= 0 {
             return Err(TreasuryError::InvalidAmount);
         }
+
+        // Track every token we've ever seen so callers can enumerate the full
+        // set of fee-bearing tokens without prior knowledge (#484).
+        storage::register_fee_token(&env, &token);
 
         let prev_balance = storage::get_token_balance(&env, &token)?;
         let new_balance = prev_balance
@@ -186,6 +215,8 @@ impl TreasuryContract {
     ///
     /// Idempotent — adding an already-registered market is a no-op (no
     /// duplicate entry, no event). Only the admin may call this.
+    /// Idempotent: adding an already-registered market is a no-op. Only the
+    /// admin may call this.
     pub fn add_market(
         env: Env,
         caller: Address,
@@ -206,6 +237,10 @@ impl TreasuryContract {
             markets.push_back(market_contract.clone());
             storage::set_authorized_markets(&env, &markets);
             events::emit_market_added(&env, &market_contract);
+        let mut markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&market_contract) {
+            markets.push_back(market_contract.clone());
+            storage::set_authorized_markets(&env, &markets);
         }
         Ok(())
     }
@@ -252,12 +287,31 @@ impl TreasuryContract {
     /// when more than one market should remain authorized at a time.
     ///
     /// Only the admin may call this.
+        let markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&market_contract) {
+            return Err(TreasuryError::CallerNotMarket);
+        }
+        let mut updated = Vec::new(&env);
+        for m in markets.iter() {
+            if m != market_contract {
+                updated.push_back(m);
+            }
+        }
+        storage::set_authorized_markets(&env, &updated);
+        Ok(())
+    }
+
+    /// Rotate the full set of authorized markets to a single new market
+    /// contract (e.g. after a market-contract upgrade). Existing
+    /// registrations are replaced entirely — use [`add_market`] /
+    /// [`remove_market`] to manage individual entries instead.
     pub fn set_market_contract(
         env: Env,
         caller: Address,
         new_market_contract: Address,
     ) -> Result<(), TreasuryError> {
         caller.require_auth();
+
         if !storage::has_admin(&env) {
             return Err(TreasuryError::NotInitialized);
         }
@@ -270,6 +324,10 @@ impl TreasuryContract {
         let mut markets: Vec<Address> = Vec::new(&env);
         markets.push_back(new_market_contract.clone());
         storage::set_authorized_markets(&env, &markets);
+        let old_markets = storage::get_authorized_markets(&env);
+        let old = old_markets.get(0).unwrap_or_else(|| new_market_contract.clone());
+        let updated = soroban_sdk::vec![&env, new_market_contract.clone()];
+        storage::set_authorized_markets(&env, &updated);
         events::emit_market_contract_updated(&env, &old, &new_market_contract);
         Ok(())
     }
@@ -457,9 +515,30 @@ impl TreasuryContract {
         storage::get_admin(&env)
     }
 
-    /// Return the registered market contract address. Returns `UpgradeRequired` if version mismatches.
+    /// Return the primary registered market contract address (the first entry
+    /// in the authorized-markets registry). Returns `NotInitialized` if no
+    /// market has ever been registered.
     pub fn market_contract(env: Env) -> Result<Address, TreasuryError> {
-        storage::get_authorized_market(&env)
+        storage::get_authorized_markets(&env)
+            .get(0)
+            .ok_or(TreasuryError::NotInitialized)
+    }
+
+    /// Return whether `market` is currently authorized to call `collect_fee`.
+    pub fn is_authorized_market(env: Env, market: Address) -> bool {
+        storage::is_authorized_market(&env, &market)
+    }
+
+    /// Return every market contract currently authorized to call `collect_fee`.
+    pub fn list_markets(env: Env) -> Vec<Address> {
+        storage::get_authorized_markets(&env)
+    }
+
+    /// Return every distinct token mint that has ever had a fee collected for
+    /// it (#484). Useful for admin tooling to discover which per-token
+    /// balances exist without prior knowledge of the token addresses.
+    pub fn list_fee_tokens(env: Env) -> Vec<Address> {
+        storage::get_fee_tokens(&env)
     }
 
     /// Return the current custodied balance for `token` (decreases on withdrawal).

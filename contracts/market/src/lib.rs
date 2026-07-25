@@ -32,6 +32,8 @@
 //! | `resolve_market` (oracle key)      | anyone (valid signature wins)   |
 //! | `resolve_market` (admin forced)    | admin (when oracle key is zero) |
 //! | `settle_position` / `batch_settle` | any user (resolved market)      |
+//! | `update_market_oracle`             | admin                           |
+//! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
 //!
 //! ## Storage layout
 //!
@@ -49,6 +51,7 @@
 //! | `ResolutionContract`                | `Address`       | Optional resolution contract that gates resolution |
 //! | `ThresholdSigners`                  | `Vec<BytesN<32>>` | Multi-signer quorum public keys (#378)           |
 //! | `ThresholdQuorum`                   | `u32`           | Min valid signatures required for resolution (#378)|
+//! | `FeeWaivers`                        | `Vec<Address>`  | Admin-managed fee-exempt address list (#483)       |
 
 mod deposit;
 mod error;
@@ -865,6 +868,135 @@ impl MarketContract {
         Ok(())
     }
 
+    // ========== Fee Waiver List (#483) ==========
+
+    /// Add `account` to the admin-managed fee waiver list.
+    ///
+    /// Waived addresses pay no withdrawal fee regardless of the configured
+    /// [`set_fee_rate`]. Adding an address that is already waived is a no-op.
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn add_fee_waiver(
+        env: Env,
+        admin: Address,
+        account: Address,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::add_fee_waiver(&env, &account);
+        events::emit_fee_waiver_added(&env, &account, &admin);
+        Ok(())
+    }
+
+    /// Remove `account` from the admin-managed fee waiver list.
+    ///
+    /// Removing an address that is not currently waived is a no-op.
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn remove_fee_waiver(
+        env: Env,
+        admin: Address,
+        account: Address,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::remove_fee_waiver(&env, &account);
+        events::emit_fee_waiver_removed(&env, &account, &admin);
+        Ok(())
+    }
+
+    /// Return whether `account` is currently exempt from withdrawal fees.
+    pub fn is_fee_waived(env: Env, account: Address) -> bool {
+        storage::is_fee_waived(&env, &account)
+    }
+
+    /// Return the full list of addresses currently exempt from withdrawal fees.
+    pub fn get_fee_waivers(env: Env) -> soroban_sdk::Vec<Address> {
+        storage::get_fee_waivers(&env)
+    }
+
+    // ========== Oracle Pubkey Rotation (#486) ==========
+
+    /// Rotate the oracle public key used to verify resolution signatures for
+    /// `market_id`.
+    ///
+    /// Intended for recovery from a compromised or retired oracle signing key
+    /// without requiring the market to be recreated. Only permitted while the
+    /// market is still [`MarketStatus::Active`] — a resolved or canceled
+    /// market has no further use for oracle verification.
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `admin` - Must be the stored admin address (authorizes the call)
+    /// * `market_id` - Identifier of the market whose oracle key is rotated
+    /// * `new_oracle_pubkey` - Replacement Ed25519 oracle public key
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin.
+    /// - [`ContractError::MarketNotFound`] – the market does not exist.
+    /// - [`ContractError::MarketNotActive`] – the market is resolved or canceled.
+    /// - [`ContractError::InvalidSignature`] – `new_oracle_pubkey` is the
+    ///   all-zero key, which can never produce a valid Ed25519 signature.
+    ///
+    /// # Events
+    /// Emits [`events::MarketOracleUpdated`] with the old and new oracle keys.
+    pub fn update_market_oracle(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        new_oracle_pubkey: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        // Guard: an all-zero pubkey can never produce a valid Ed25519 signature,
+        // making the market permanently unresolvable (mirrors initialize_market).
+        if new_oracle_pubkey == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ContractError::InvalidSignature);
+        }
+
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        if market.status != MarketStatus::Active {
+            return Err(ContractError::MarketNotActive);
+        }
+
+        let old_oracle_pubkey = market.oracle_pubkey.clone();
+        market.oracle_pubkey = new_oracle_pubkey.clone();
+        storage::set_market(&env, market_id, &market)?;
+
+        events::emit_market_oracle_updated(
+            &env,
+            market_id,
+            &admin,
+            &old_oracle_pubkey,
+            &new_oracle_pubkey,
+            env.ledger().timestamp(),
+        );
+
+        Ok(())
+    }
+
     /// Configure the multi-signer quorum for threshold-based resolution (#378).
     ///
     /// `signers` is the ordered set of oracle public keys. `quorum` is the
@@ -976,6 +1108,33 @@ impl MarketContract {
         }
         storage::set_outcome_token_contract(&env, &outcome_token_contract);
         Ok(())
+    }
+
+    /// Return a market's current [`MarketStatus`].
+    ///
+    /// Exposed as a lightweight cross-contract read for companion contracts
+    /// (e.g. the outcome-token contract's `transfer`, which must gate
+    /// peer-to-peer transfers on the market having resolved) that cannot
+    /// depend on this crate directly.
+    pub fn get_market_status(env: Env, market_id: u32) -> MarketStatus {
+        storage::get_market(&env, market_id)
+            .ok()
+            .flatten()
+            .expect("market not found")
+            .status
+    }
+
+    /// Return a market's collateral (SAC) token address.
+    ///
+    /// Exposed as a lightweight cross-contract read for companion contracts
+    /// (e.g. the resolution contract, which locks proposer bonds in the same
+    /// token as the market's collateral).
+    pub fn get_collateral_token(env: Env, market_id: u32) -> Address {
+        storage::get_market(&env, market_id)
+            .ok()
+            .flatten()
+            .expect("market not found")
+            .collateral_token
     }
 
     /// Return the registered outcome-token contract address, if any.
