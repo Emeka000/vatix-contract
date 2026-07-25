@@ -68,8 +68,10 @@ pub enum StorageKey {
     /// Flag indicating the contract is paused for emergency maintenance.
     /// When true, all state-mutating operations are rejected.
     Paused,
-    /// Admin-managed list of addresses exempt from withdrawal fees (#483).
-    FeeWaivers,
+    /// Reentrancy lock for `deposit_collateral` (Issue #501). Set while a
+    /// deposit's external token transfer is in flight so a reentrant call
+    /// back into `deposit_collateral` from that transfer is rejected.
+    DepositLock,
 }
 
 // --- Version helpers ---
@@ -285,52 +287,21 @@ pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
 }
 
-// --- Fee Waiver List Storage (#483) ---
-//
-// Admin-managed allowlist of addresses that are exempt from withdrawal fees,
-// mirroring the `ThresholdSigners` list pattern used elsewhere in this module.
+// --- Deposit Reentrancy Lock (Issue #501) ---
 
-/// Return the current fee waiver list (empty if never configured).
-pub fn get_fee_waivers(env: &Env) -> Vec<Address> {
+/// Check whether the deposit reentrancy lock is currently held.
+pub fn is_deposit_locked(env: &Env) -> bool {
     env.storage()
         .persistent()
-        .get(&StorageKey::FeeWaivers)
-        .unwrap_or_else(|| Vec::new(env))
+        .get(&StorageKey::DepositLock)
+        .unwrap_or(false)
 }
 
-fn set_fee_waivers(env: &Env, waivers: &Vec<Address>) {
-    env.storage().persistent().set(&StorageKey::FeeWaivers, waivers);
-}
-
-/// Whether `account` is currently exempt from withdrawal fees.
-pub fn is_fee_waived(env: &Env, account: &Address) -> bool {
-    get_fee_waivers(env).contains(account)
-}
-
-/// Add `account` to the fee waiver list. Idempotent: adding an
-/// already-waived address is a no-op.
-pub fn add_fee_waiver(env: &Env, account: &Address) {
-    let mut waivers = get_fee_waivers(env);
-    if !waivers.contains(account) {
-        waivers.push_back(account.clone());
-        set_fee_waivers(env, &waivers);
-    }
-}
-
-/// Remove `account` from the fee waiver list. Idempotent: removing an
-/// address that is not present is a no-op.
-pub fn remove_fee_waiver(env: &Env, account: &Address) {
-    let waivers = get_fee_waivers(env);
-    if !waivers.contains(account) {
-        return;
-    }
-    let mut updated = Vec::new(env);
-    for addr in waivers.iter() {
-        if addr != *account {
-            updated.push_back(addr);
-        }
-    }
-    set_fee_waivers(env, &updated);
+/// Acquire or release the deposit reentrancy lock.
+pub fn set_deposit_locked(env: &Env, locked: bool) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::DepositLock, &locked);
 }
 
 #[cfg(test)]
