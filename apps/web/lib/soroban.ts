@@ -6,7 +6,6 @@
 
 import {
   Contract,
-  nativeToScVal,
   rpc,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
@@ -59,15 +58,8 @@ export async function fetchContractMarkets(): Promise<GetMarketsResult> {
     return { markets: [] };
   }
   try {
-    const server = new rpc.Server(SOROBAN_RPC_URL);
-    // `getContractData` is a low-level key/value read; the actual key depends
-    // on your indexer. Adjust StorageKey to match your contract's storage layout.
-    const result = await server.getContractData(
-      CONTRACT_ID,
-      nativeToScVal("MARKETS"),
-      rpc.Durability.Persistent,
-    );
-    if (!result || !result.val) {
+    const res = await fetch(`${INDEXER_API_URL}/markets`);
+    if (!res.ok) {
       return { markets: [] };
     }
     const data = await res.json();

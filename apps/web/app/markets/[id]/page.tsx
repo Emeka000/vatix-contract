@@ -1,5 +1,5 @@
 import { findMarketById } from "@/lib/market-helpers";
-import { DepositForm } from "@/components/DepositForm";
+import { PositionPanel } from "@/components/PositionPanel";
 
 export default async function MarketDetailPage({
   params,
@@ -40,7 +40,7 @@ export default async function MarketDetailPage({
         <p>Volume: {market.volume}</p>
       </div>
       <div className="mt-8">
-        <DepositForm marketId={market.id} />
+        <PositionPanel marketId={market.id} />
       </div>
     </div>
   );

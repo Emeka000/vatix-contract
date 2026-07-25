@@ -1,66 +1,134 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useWallet } from "@/context/WalletContext";
+import { getPosition, type PositionData } from "@/lib/contract-client";
 import { DepositForm } from "./DepositForm";
 import { WithdrawForm } from "./WithdrawForm";
 import { LoadingSkeleton } from "./LoadingSkeleton";
 
+interface PositionPanelProps {
+  /**
+   * Market to read the connected wallet's live position for. When omitted
+   * (e.g. a cross-market "your positions" summary), no live read is made.
+   */
+  marketId?: string;
+}
+
+const STROOPS_PER_UNIT = 10_000_000;
+
+function formatShares(stroops: bigint): string {
+  return (Number(stroops) / STROOPS_PER_UNIT).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  });
+}
+
 /**
- * PositionPanel displays the user's open prediction-market positions together
- * with deposit and withdraw controls.
+ * PositionPanel displays the connected wallet's live on-chain position for a
+ * market, alongside deposit and withdraw controls.
  *
- * Positions are fetched asynchronously on mount. While loading, a skeleton
- * placeholder is shown. When no positions exist, an empty-state message guides
- * the user to deposit funds and browse markets.
- *
- * @example
- * ```tsx
- * // Render the panel on a market detail page
- * <PositionPanel />
- * ```
+ * The position is read directly from the market contract (`get_position`)
+ * whenever the connected address or market changes, so the panel always
+ * reflects on-chain state rather than cached/local data.
  */
-export function PositionPanel() {
-  const [isLoading, setIsLoading] = useState(true);
-  const [positions, setPositions] = useState<any[]>([]);
+export function PositionPanel({ marketId }: PositionPanelProps) {
+  const { address } = useWallet();
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [position, setPosition] = useState<PositionData | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!address || !marketId) {
+      setPosition(null);
+      setError(null);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await getPosition(parseInt(marketId, 10), address);
+      setPosition(result);
+    } catch (err) {
+      console.error("Failed to load position:", err);
+      setError(err instanceof Error ? err.message : "Failed to load position.");
+      setPosition(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [address, marketId]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-      setPositions([]);
-    }, 1500);
-
-    return () => clearTimeout(timer);
-  }, []);
+    void refresh();
+  }, [refresh]);
 
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2">
-        <DepositForm />
+        <DepositForm marketId={marketId} />
         <WithdrawForm />
       </div>
 
       <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700 sm:p-6">
-        <h2 className="text-base font-semibold sm:text-lg">Your positions</h2>
+        <h2 className="text-base font-semibold sm:text-lg">Your position</h2>
         <div className="mt-4 min-h-[11rem]">
-          {isLoading ? (
-            <LoadingSkeleton />
-          ) : positions.length === 0 ? (
+          {!address ? (
             <div className="text-center py-8">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                You have no open positions yet.
+                Connect your wallet to view your position.
+              </p>
+            </div>
+          ) : isLoading ? (
+            <LoadingSkeleton />
+          ) : error ? (
+            <div className="text-center py-8">
+              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                {error}
+              </p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="mt-3 text-sm text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+              >
+                Retry
+              </button>
+            </div>
+          ) : !position ? (
+            <div className="text-center py-8">
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                You have no open position in this market yet.
               </p>
               <p className="mt-2 text-xs text-slate-500 dark:text-slate-500">
-                Deposit funds and browse markets to get started.
+                Deposit funds above to get started.
               </p>
             </div>
           ) : (
-            <ul className="space-y-2">
-              {positions.map((pos, i) => (
-                <li key={i} className="text-sm text-slate-700 dark:text-slate-300">
-                  {pos.name}
-                </li>
-              ))}
-            </ul>
+            <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">YES shares</dt>
+                <dd className="mt-1 font-medium text-slate-900 dark:text-slate-100">
+                  {formatShares(position.yesShares)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">NO shares</dt>
+                <dd className="mt-1 font-medium text-slate-900 dark:text-slate-100">
+                  {formatShares(position.noShares)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Locked collateral</dt>
+                <dd className="mt-1 font-medium text-slate-900 dark:text-slate-100">
+                  {formatShares(position.lockedCollateral)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500 dark:text-slate-400">Status</dt>
+                <dd className="mt-1 font-medium text-slate-900 dark:text-slate-100">
+                  {position.isSettled ? "Settled" : "Open"}
+                </dd>
+              </div>
+            </dl>
           )}
         </div>
       </div>
