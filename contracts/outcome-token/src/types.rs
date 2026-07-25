@@ -7,6 +7,20 @@ pub enum TokenKind {
     No,
 }
 
+/// Local mirror of `vatix_market::types::MarketStatus`.
+///
+/// The outcome-token contract cannot depend on the market crate directly
+/// (the market crate already depends on this one), so this enum must be kept
+/// in variant-for-variant sync with the market contract's `MarketStatus` for
+/// cross-contract calls to `get_market_status` to decode correctly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum MarketStatus {
+    Active,
+    Resolved,
+    Canceled,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct OutcomeTokenConfig {

@@ -1042,6 +1042,33 @@ impl MarketContract {
         Ok(())
     }
 
+    /// Return a market's current [`MarketStatus`].
+    ///
+    /// Exposed as a lightweight cross-contract read for companion contracts
+    /// (e.g. the outcome-token contract's `transfer`, which must gate
+    /// peer-to-peer transfers on the market having resolved) that cannot
+    /// depend on this crate directly.
+    pub fn get_market_status(env: Env, market_id: u32) -> MarketStatus {
+        storage::get_market(&env, market_id)
+            .ok()
+            .flatten()
+            .expect("market not found")
+            .status
+    }
+
+    /// Return a market's collateral (SAC) token address.
+    ///
+    /// Exposed as a lightweight cross-contract read for companion contracts
+    /// (e.g. the resolution contract, which locks proposer bonds in the same
+    /// token as the market's collateral).
+    pub fn get_collateral_token(env: Env, market_id: u32) -> Address {
+        storage::get_market(&env, market_id)
+            .ok()
+            .flatten()
+            .expect("market not found")
+            .collateral_token
+    }
+
     /// Return the registered outcome-token contract address, if any.
     pub fn get_outcome_token_contract(env: Env) -> Option<Address> {
         storage::get_outcome_token_contract(&env)

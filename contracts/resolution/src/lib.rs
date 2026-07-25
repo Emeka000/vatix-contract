@@ -45,6 +45,16 @@ const MIN_CHALLENGE_WINDOW_SECONDS: u64 = 60;
 const MAX_CHALLENGE_WINDOW_SECONDS: u64 = 14 * 24 * 60 * 60;
 const MAX_URI_BYTES: u32 = 512;
 
+/// Maximum number of times a candidate may be re-proposed via `appeal`
+/// after being challenged, before the dispute must be resolved off-chain
+/// (e.g. by admin intervention) rather than through further appeals.
+const MAX_APPEAL_ROUNDS: u32 = 3;
+
+/// Minimum bond a proposer must post (in the market's collateral token,
+/// stroops) when calling `propose`. Locked in this contract and refunded on
+/// successful finalize.
+const MIN_BOND_AMOUNT: i128 = 10_000_000;
+
 #[contract]
 pub struct ResolutionContract;
 
@@ -128,6 +138,11 @@ impl ResolutionContract {
 
     /// Propose a signed resolution candidate for a market.
     ///
+    /// The proposer must post a `bond_amount` (>= `MIN_BOND_AMOUNT`) in the
+    /// market's collateral token, transferred from the proposer to this
+    /// contract and locked until the candidate (or one of its appeals)
+    /// finalizes, at which point it is refunded to the proposer.
+    ///
     /// The returned candidate is the on-chain anchor for the backend
     /// `ResolutionCandidate`: off-chain services may display the same
     /// `challenge_deadline` and evidence URI while listening for challenge and
@@ -141,11 +156,15 @@ impl ResolutionContract {
         signature_expiry: u64,
         evidence_uri: String,
         challenge_window_seconds: u64,
+        bond_amount: i128,
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
         let config = storage::get_config(&env);
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
+        if bond_amount < MIN_BOND_AMOUNT {
+            return Err(ContractError::InsufficientBond);
+        }
         if storage::get_candidate_id_for_market(&env, market_id).is_some() {
             return Err(ContractError::CandidateAlreadyExists);
         }
@@ -164,6 +183,13 @@ impl ResolutionContract {
             args,
         );
         verification?;
+
+        // Lock the proposer's bond in this contract's collateral-token
+        // balance. Uses the same token as the market's collateral so a
+        // single `finalize` refund path can rely on it.
+        let collateral_token = get_collateral_token(&env, &config, market_id);
+        let token_client = TokenClient::new(&env, &collateral_token);
+        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
 
         let proposed_at = env.ledger().timestamp();
         // Validate signature expiry must be in the future (at or after proposed_at)
@@ -184,6 +210,8 @@ impl ResolutionContract {
             challenged_by: None,
             challenge_uri: None,
             finalized_at: None,
+            appeal_round: 0,
+            bond_amount,
         };
 
         storage::set_candidate(&env, &candidate);
@@ -227,6 +255,67 @@ impl ResolutionContract {
         Ok(())
     }
 
+    /// Re-propose a challenged candidate, resetting it to `Proposed` with a
+    /// fresh challenge window so it can be finalized (or challenged again).
+    ///
+    /// Only usable while the candidate is `Challenged`, and capped at
+    /// `MAX_APPEAL_ROUNDS` total appeals per candidate — once the cap is
+    /// reached, the dispute can no longer be advanced through this contract
+    /// and must be resolved by the admin/factory out of band. The proposer's
+    /// original bond stays locked and carries over across appeals; it is
+    /// only refunded once the candidate is ultimately finalized.
+    pub fn appeal(
+        env: Env,
+        proposer: Address,
+        candidate_id: u32,
+        outcome: bool,
+        signature: BytesN<64>,
+        evidence_uri: String,
+        challenge_window_seconds: u64,
+    ) -> Result<(), ContractError> {
+        proposer.require_auth();
+        let config = storage::get_config(&env);
+        validate_uri(&evidence_uri)?;
+        validate_challenge_window(challenge_window_seconds)?;
+
+        let mut candidate =
+            storage::get_candidate(&env, candidate_id).ok_or(ContractError::CandidateNotFound)?;
+        if candidate.status != CandidateStatus::Challenged {
+            return Err(ContractError::CandidateNotChallenged);
+        }
+        if candidate.appeal_round >= MAX_APPEAL_ROUNDS {
+            return Err(ContractError::AppealLimitExceeded);
+        }
+
+        // Re-verify the new signed outcome the same way `propose` does.
+        let args: Vec<Val> = soroban_sdk::vec![&env,
+            candidate.market_id.into_val(&env),
+            outcome.into_val(&env),
+            signature.clone().into_val(&env),
+        ];
+        let verification: Result<(), ContractError> = env.invoke_contract(
+            &config.market_contract,
+            &Symbol::new(&env, "verify_signature"),
+            args,
+        );
+        verification?;
+
+        let proposed_at = env.ledger().timestamp();
+        candidate.outcome = outcome;
+        candidate.signature = signature;
+        candidate.evidence_uri = evidence_uri;
+        candidate.proposed_at = proposed_at;
+        candidate.challenge_deadline = proposed_at + challenge_window_seconds;
+        candidate.status = CandidateStatus::Proposed;
+        candidate.challenged_by = None;
+        candidate.challenge_uri = None;
+        candidate.appeal_round += 1;
+
+        storage::set_candidate(&env, &candidate);
+        events::emit_candidate_appealed(&env, &candidate);
+        Ok(())
+    }
+
     /// Finalize an unchallenged candidate after its challenge window closes.
     ///
     /// After marking the candidate as `Finalized`, immediately invokes
@@ -260,6 +349,20 @@ impl ResolutionContract {
         candidate.status = CandidateStatus::Finalized;
         candidate.finalized_at = Some(env.ledger().timestamp());
         storage::set_candidate(&env, &candidate);
+
+        // Refund the proposer's locked bond now that the candidate has
+        // finalized successfully.
+        if candidate.bond_amount > 0 {
+            let config = storage::get_config(&env);
+            let collateral_token = get_collateral_token(&env, &config, candidate.market_id);
+            let token_client = TokenClient::new(&env, &collateral_token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &candidate.proposer,
+                &candidate.bond_amount,
+            );
+        }
+
         events::emit_candidate_finalized(&env, &candidate);
 
         // Cross-contract callback: resolve the market with the finalized outcome.
@@ -357,4 +460,15 @@ fn validate_uri(uri: &String) -> Result<(), ContractError> {
         return Err(ContractError::InvalidEvidenceUri);
     }
     Ok(())
+}
+
+/// Look up a market's collateral token via a cross-contract call to the
+/// registered market contract's `get_collateral_token`, used to lock and
+/// refund proposer bonds in the same token as the market itself.
+fn get_collateral_token(env: &Env, config: &ResolutionConfig, market_id: u32) -> Address {
+    env.invoke_contract(
+        &config.market_contract,
+        &Symbol::new(env, "get_collateral_token"),
+        soroban_sdk::vec![env, market_id.into_val(env)],
+    )
 }
