@@ -68,6 +68,10 @@ pub enum StorageKey {
     /// Flag indicating the contract is paused for emergency maintenance.
     /// When true, all state-mutating operations are rejected.
     Paused,
+    /// Reentrancy lock for `deposit_collateral` (Issue #501). Set while a
+    /// deposit's external token transfer is in flight so a reentrant call
+    /// back into `deposit_collateral` from that transfer is rejected.
+    DepositLock,
 }
 
 // --- Version helpers ---
@@ -281,6 +285,23 @@ pub fn is_paused(env: &Env) -> bool {
 /// Pause or unpause the contract (emergency halt).
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
+}
+
+// --- Deposit Reentrancy Lock (Issue #501) ---
+
+/// Check whether the deposit reentrancy lock is currently held.
+pub fn is_deposit_locked(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::DepositLock)
+        .unwrap_or(false)
+}
+
+/// Acquire or release the deposit reentrancy lock.
+pub fn set_deposit_locked(env: &Env, locked: bool) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::DepositLock, &locked);
 }
 
 #[cfg(test)]

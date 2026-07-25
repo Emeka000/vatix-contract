@@ -5,6 +5,12 @@ use soroban_sdk::{Env, String};
 /// Minimum collateral deposit in stroops (1 USDC = 10_000_000 stroops).
 pub const MIN_DEPOSIT_AMOUNT: i128 = 10_000_000;
 
+/// Maximum allowed length (in bytes) for a market's title/question string
+/// (Issue #498). Sanitizes market titles against unbounded input: an
+/// unbounded title would let a creator inflate storage cost and event
+/// payload size for every subsequent read of this market.
+pub const MAX_MARKET_TITLE_LENGTH: u32 = 500;
+
 /// Guard function to validate input before processing.
 ///
 /// This is a general-purpose validation guard that can be used in integration tests
@@ -52,10 +58,11 @@ pub fn validate_market_creation(
     Ok(())
 }
 
-/// Validates question format: must be non-empty and fewer than 500 characters
+/// Validates question format: must be non-empty and within the sanitized
+/// title-length bound.
 fn validate_question_format(question: &String) -> Result<(), ContractError> {
     let len = question.len();
-    if len == 0 || len >= 500 {
+    if len == 0 || len >= MAX_MARKET_TITLE_LENGTH {
         return Err(ContractError::InvalidQuestion);
     }
     Ok(())
