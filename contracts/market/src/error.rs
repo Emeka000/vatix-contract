@@ -198,6 +198,11 @@ pub enum ContractError {
     /// All state-mutating operations are temporarily disabled.
     ContractPaused = 91,
 
+    // ========== Security Errors (100-109) ==========
+    /// A reentrant call was detected (e.g. a token contract calling back into
+    /// `deposit_collateral` before the initial call has finished).
+    ReentrantCall = 100,
+
 }
 
 #[cfg(test)]

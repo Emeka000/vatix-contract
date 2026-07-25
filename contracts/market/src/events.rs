@@ -23,12 +23,25 @@
 //! | `TreasurySet`            | `treasury_set`                      |
 //! | `AdminTransferProposed`  | `admin_transfer_proposed`           |
 //! | `AdminTransferAccepted`  | `admin_transfer_accepted`           |
+//!
+//! # Event schema versioning (Issue #500)
+//!
+//! Every event carries [`EVENT_VERSION`] as its first explicit topic (right
+//! after the auto-generated event-name topic), so off-chain indexers can
+//! distinguish payload schema versions across future contract upgrades
+//! without needing to parse the data payload first.
 
-use soroban_sdk::{contractevent, Address, BytesN, Env, String};
+use soroban_sdk::{contractevent, Address, BytesN, Env, String, Vec};
+
+/// Schema version stamped into every event's topics. Bump when an event's
+/// topic/data shape changes in a way consumers need to distinguish.
+pub const EVENT_VERSION: u32 = 1;
 
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct ContractInitialized {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub admin: Address,
     /// Ledger timestamp when the contract was bootstrapped.
@@ -46,6 +59,7 @@ pub struct ContractInitialized {
 /// * `admin` - The address stored as the contract admin
 pub fn emit_contract_initialized(env: &Env, admin: &Address) {
     ContractInitialized {
+        version: EVENT_VERSION,
         admin: admin.clone(),
         initialized_at: env.ledger().timestamp(),
     }
@@ -57,6 +71,8 @@ pub fn emit_contract_initialized(env: &Env, admin: &Address) {
 #[derive(Clone, Debug)]
 pub struct EmergencyPauseToggledEvent {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub paused: bool,
     /// Ledger timestamp when the pause state was changed.
     pub timestamp: u64,
@@ -65,6 +81,7 @@ pub struct EmergencyPauseToggledEvent {
 /// Emit event when the emergency pause flag is toggled.
 pub fn emit_emergency_pause_toggled(env: &Env, paused: bool) {
     EmergencyPauseToggledEvent {
+        version: EVENT_VERSION,
         paused,
         timestamp: env.ledger().timestamp(),
     }
@@ -75,6 +92,8 @@ pub fn emit_emergency_pause_toggled(env: &Env, paused: bool) {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MarketCreated {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     pub creator: Address,
@@ -87,6 +106,8 @@ pub struct MarketCreated {
 #[derive(Clone, Debug)]
 pub struct CollateralDeposited {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub user: Address,
     #[topic]
     pub market_id: u32,
@@ -98,6 +119,8 @@ pub struct CollateralDeposited {
 #[derive(Clone, Debug)]
 pub struct CollateralWithdrawn {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub user: Address,
     #[topic]
     pub market_id: u32,
@@ -108,6 +131,8 @@ pub struct CollateralWithdrawn {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct WithdrawEdgeCase {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -140,6 +165,7 @@ pub fn emit_collateral_deposited(
     new_total: i128,
 ) {
     CollateralDeposited {
+        version: EVENT_VERSION,
         user: user.clone(),
         market_id,
         amount,
@@ -173,6 +199,7 @@ pub fn emit_collateral_withdrawn(
     new_total: i128,
 ) {
     CollateralWithdrawn {
+        version: EVENT_VERSION,
         user: user.clone(),
         market_id,
         amount,
@@ -208,6 +235,7 @@ pub fn emit_market_created(
 ) {
     // Publish the event with topics and data
     MarketCreated {
+        version: EVENT_VERSION,
         market_id,
         creator: creator.clone(),
         question: question.clone(),
@@ -220,6 +248,8 @@ pub fn emit_market_created(
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MarketClosedToDepositsEvent {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     pub admin: Address,
@@ -249,6 +279,7 @@ pub fn emit_market_closed_to_deposits(
     closed_at: u64,
 ) {
     MarketClosedToDepositsEvent {
+        version: EVENT_VERSION,
         market_id,
         admin: admin.clone(),
         closed_at,
@@ -274,6 +305,7 @@ pub fn emit_market_closed_to_deposits(
 /// ```
 pub fn emit_withdraw_edge_case(env: &Env, user: &Address, market_id: u32, amount: i128) {
     WithdrawEdgeCase {
+        version: EVENT_VERSION,
         user: user.clone(),
         market_id,
         amount,
@@ -284,6 +316,8 @@ pub fn emit_withdraw_edge_case(env: &Env, user: &Address, market_id: u32, amount
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MarketResolved {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     pub oracle_pubkey: BytesN<32>,
@@ -319,6 +353,7 @@ pub fn emit_market_resolved(
     resolved_at: u64,
 ) {
     MarketResolved {
+        version: EVENT_VERSION,
         market_id,
         oracle_pubkey: oracle_pubkey.clone(),
         resolver: resolver.clone(),
@@ -331,6 +366,8 @@ pub fn emit_market_resolved(
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MarketCanceled {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     pub canceler: Address,
@@ -356,6 +393,7 @@ pub struct MarketCanceled {
 /// ```
 pub fn emit_market_canceled(env: &Env, market_id: u32, canceler: &Address, canceled_at: u64) {
     MarketCanceled {
+        version: EVENT_VERSION,
         market_id,
         canceler: canceler.clone(),
         canceled_at,
@@ -366,6 +404,8 @@ pub fn emit_market_canceled(env: &Env, market_id: u32, canceler: &Address, cance
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct PositionLimitExceeded {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     #[topic]
@@ -390,6 +430,7 @@ pub struct PositionLimitExceeded {
 /// ```
 pub fn emit_position_limit_exceeded(env: &Env, market_id: u32, user: &Address, side_yes: bool) {
     PositionLimitExceeded {
+        version: EVENT_VERSION,
         market_id,
         user: user.clone(),
         side_yes,
@@ -401,6 +442,8 @@ pub fn emit_position_limit_exceeded(env: &Env, market_id: u32, user: &Address, s
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct PositionUpdated {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     #[topic]
@@ -435,6 +478,7 @@ pub fn emit_position_updated(
     locked_collateral: i128,
 ) {
     PositionUpdated {
+        version: EVENT_VERSION,
         market_id,
         user: user.clone(),
         yes_shares,
@@ -447,6 +491,8 @@ pub fn emit_position_updated(
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct TradeExecuted {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     #[topic]
@@ -486,6 +532,7 @@ pub fn emit_trade_executed(
     executed_at: u64,
 ) {
     TradeExecuted {
+        version: EVENT_VERSION,
         market_id,
         user: user.clone(),
         quantity,
@@ -500,6 +547,8 @@ pub fn emit_trade_executed(
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ValidationFailed {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub context: soroban_sdk::Symbol,
     pub error_code: u32,
@@ -526,6 +575,7 @@ pub struct ValidationFailed {
 #[allow(dead_code)]
 pub fn emit_validation_failed(env: &Env, context: soroban_sdk::Symbol, error_code: u32) {
     ValidationFailed {
+        version: EVENT_VERSION,
         context,
         error_code,
     }
@@ -536,6 +586,8 @@ pub fn emit_validation_failed(env: &Env, context: soroban_sdk::Symbol, error_cod
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct PositionSettled {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     #[topic]
@@ -566,6 +618,7 @@ pub fn emit_position_settled(
     settled_at: u64,
 ) {
     PositionSettled {
+        version: EVENT_VERSION,
         market_id,
         user: user.clone(),
         payout,
@@ -574,9 +627,54 @@ pub fn emit_position_settled(
     .publish(env);
 }
 
+/// A single aggregated event for a batch of settled positions (Issue #499),
+/// emitted once by `batch_settle_positions` in place of one
+/// `PositionSettled`/`PositionUpdated` pair per user. Event emission cost
+/// scales with call count as well as payload size, so collapsing an
+/// N-position settlement batch into one event materially cuts the
+/// per-position overhead versus the naive per-user emission loop.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PositionsBatchSettled {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    pub users: Vec<Address>,
+    pub payouts: Vec<i128>,
+    pub settled_at: u64,
+}
+
+/// Emit one aggregated event for a batch of settled positions.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `market_id` - Market identifier
+/// * `users` - Addresses whose positions were settled in this batch
+/// * `payouts` - Payout amounts, aligned by index with `users`
+/// * `settled_at` - Unix timestamp (ledger time) when the batch was settled
+pub fn emit_positions_batch_settled(
+    env: &Env,
+    market_id: u32,
+    users: &Vec<Address>,
+    payouts: &Vec<i128>,
+    settled_at: u64,
+) {
+    PositionsBatchSettled {
+        version: EVENT_VERSION,
+        market_id,
+        users: users.clone(),
+        payouts: payouts.clone(),
+        settled_at,
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct OracleSignatureVerified {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     pub outcome: bool,
@@ -602,6 +700,7 @@ pub struct OracleSignatureVerified {
 /// ```
 pub fn emit_oracle_signature_verified(env: &Env, market_id: u32, outcome: bool, verified_at: u64) {
     OracleSignatureVerified {
+        version: EVENT_VERSION,
         market_id,
         outcome,
         verified_at,
@@ -612,6 +711,8 @@ pub fn emit_oracle_signature_verified(env: &Env, market_id: u32, outcome: bool, 
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct FeeCalculated {
+    #[topic]
+    pub version: u32,
     #[topic]
     pub market_id: u32,
     #[topic]
@@ -636,6 +737,7 @@ pub fn emit_fee_calculated(
     available_after_fee: i128,
 ) {
     FeeCalculated {
+        version: EVENT_VERSION,
         market_id,
         user: user.clone(),
         fee_amount,
@@ -648,6 +750,8 @@ pub fn emit_fee_calculated(
 #[derive(Clone, Debug)]
 pub struct AdminTransferProposed {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub current_admin: Address,
     #[topic]
     pub pending_admin: Address,
@@ -656,6 +760,7 @@ pub struct AdminTransferProposed {
 
 pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, pending_admin: &Address) {
     AdminTransferProposed {
+        version: EVENT_VERSION,
         current_admin: current_admin.clone(),
         pending_admin: pending_admin.clone(),
         proposed_at: env.ledger().timestamp(),
@@ -667,6 +772,8 @@ pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, pending_
 #[derive(Clone, Debug)]
 pub struct AdminTransferAccepted {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub old_admin: Address,
     #[topic]
     pub new_admin: Address,
@@ -675,6 +782,7 @@ pub struct AdminTransferAccepted {
 
 pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &Address) {
     AdminTransferAccepted {
+        version: EVENT_VERSION,
         old_admin: old_admin.clone(),
         new_admin: new_admin.clone(),
         accepted_at: env.ledger().timestamp(),
@@ -686,12 +794,15 @@ pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &
 #[derive(Clone, Debug)]
 pub struct TreasurySet {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub treasury: Address,
     pub set_at: u64,
 }
 
 pub fn emit_treasury_set(env: &Env, treasury: &Address) {
     TreasurySet {
+        version: EVENT_VERSION,
         treasury: treasury.clone(),
         set_at: env.ledger().timestamp(),
     }
@@ -702,12 +813,15 @@ pub fn emit_treasury_set(env: &Env, treasury: &Address) {
 #[derive(Clone, Debug)]
 pub struct AdminRenounceProposedEvent {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub admin: Address,
     pub proposed_at: u64,
 }
 
 pub fn emit_admin_renounce_proposed(env: &Env, admin: &Address) {
     AdminRenounceProposedEvent {
+        version: EVENT_VERSION,
         admin: admin.clone(),
         proposed_at: env.ledger().timestamp(),
     }
@@ -718,12 +832,15 @@ pub fn emit_admin_renounce_proposed(env: &Env, admin: &Address) {
 #[derive(Clone, Debug)]
 pub struct AdminRenouncedEvent {
     #[topic]
+    pub version: u32,
+    #[topic]
     pub former_admin: Address,
     pub renounced_at: u64,
 }
 
 pub fn emit_admin_renounced(env: &Env, admin: &Address) {
     AdminRenouncedEvent {
+        version: EVENT_VERSION,
         former_admin: admin.clone(),
         renounced_at: env.ledger().timestamp(),
     }
@@ -758,8 +875,11 @@ mod tests {
         let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
         assert_eq!(topic0, Symbol::new(&env, "contract_initialized"));
 
-        let topic1: Address = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, admin);
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: Address = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, admin);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let initialized_at_val: u64 = data
@@ -793,13 +913,16 @@ mod tests {
 
         // Topics
         let topics = &event.1;
-        assert_eq!(topics.len(), 2);
+        assert_eq!(topics.len(), 3);
 
         let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
         assert_eq!(topic0, Symbol::new(&env, "market_created"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
 
         // Data
         // Data
@@ -846,7 +969,10 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "market_resolved"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let resolver_val: BytesN<32> = data
@@ -889,7 +1015,10 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "market_canceled"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let canceler_val: Address = data
@@ -936,10 +1065,13 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "position_updated"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
 
-        let topic2: Address = topics.get(2).unwrap().into_val(&env);
-        assert_eq!(topic2, user);
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
+
+        let topic3: Address = topics.get(3).unwrap().into_val(&env);
+        assert_eq!(topic3, user);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let yes_shares_val: i128 = data
@@ -984,10 +1116,13 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "position_settled"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
 
-        let topic2: Address = topics.get(2).unwrap().into_val(&env);
-        assert_eq!(topic2, user);
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
+
+        let topic3: Address = topics.get(3).unwrap().into_val(&env);
+        assert_eq!(topic3, user);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let payout_val: i128 = data
@@ -1020,11 +1155,14 @@ mod tests {
         let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
         assert_eq!(topic0, Symbol::new(&env, "collateral_deposited"));
 
-        let topic1: Address = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, user);
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
 
-        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
-        assert_eq!(topic2, market_id);
+        let topic2: Address = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, user);
+
+        let topic3: u32 = topics.get(3).unwrap().into_val(&env);
+        assert_eq!(topic3, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let amount_val: i128 = data
@@ -1060,8 +1198,11 @@ mod tests {
         let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
         assert_eq!(topic0, Symbol::new(&env, "validation_failed"));
 
-        let topic1: Symbol = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, context);
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: Symbol = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, context);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let code: u32 = data
@@ -1094,11 +1235,14 @@ mod tests {
         let topic0: Symbol = topics.get(0).unwrap().into_val(&env);
         assert_eq!(topic0, Symbol::new(&env, "collateral_withdrawn"));
 
-        let topic1: Address = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, user);
+        let topic1: u32 = topics.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, EVENT_VERSION);
 
-        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
-        assert_eq!(topic2, market_id);
+        let topic2: Address = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, user);
+
+        let topic3: u32 = topics.get(3).unwrap().into_val(&env);
+        assert_eq!(topic3, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let amount_val: i128 = data
@@ -1136,7 +1280,10 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "oracle_signature_verified"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let outcome_val: bool = data
@@ -1175,7 +1322,10 @@ mod tests {
         assert_eq!(topic0, Symbol::new(&env, "fee_calculated"));
 
         let topic1: u32 = topics.get(1).unwrap().into_val(&env);
-        assert_eq!(topic1, market_id);
+        assert_eq!(topic1, EVENT_VERSION);
+
+        let topic2: u32 = topics.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
 
         let data: Map<Symbol, Val> = event.2.try_into_val(&env).unwrap();
         let fee_val: i128 = data

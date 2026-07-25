@@ -12,6 +12,35 @@ use crate::validation;
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{Address, Env};
 
+/// RAII-style reentrancy guard for the deposit path (Issue #501).
+///
+/// `deposit_collateral` performs an external token transfer (a cross-contract
+/// call) before it finishes updating this contract's own state. Without a
+/// guard, a malicious or upgraded token contract could call back into
+/// `deposit_collateral` from within that transfer and re-enter before the
+/// first call's state update has been persisted. The lock is released
+/// automatically on `Drop`, so it clears on every exit path (success or
+/// error) without needing to touch each `return`/`?` site individually.
+struct DepositReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> DepositReentrancyGuard<'a> {
+    fn acquire(env: &'a Env) -> Result<Self, ContractError> {
+        if storage::is_deposit_locked(env) {
+            return Err(ContractError::ReentrantCall);
+        }
+        storage::set_deposit_locked(env, true);
+        Ok(Self { env })
+    }
+}
+
+impl<'a> Drop for DepositReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        storage::set_deposit_locked(self.env, false);
+    }
+}
+
 /// Deposit USDC collateral into a prediction market
 ///
 /// # Detailed Flow
@@ -51,6 +80,10 @@ pub fn deposit_collateral(
 ) -> Result<(), ContractError> {
     // Authorization
     user.require_auth();
+
+    // Reentrancy guard: held for the remainder of this call, released
+    // automatically when it goes out of scope.
+    let _guard = DepositReentrancyGuard::acquire(&env)?;
 
     // Validation: reject zero or negative deposits explicitly
     if amount <= 0 {
