@@ -12,12 +12,12 @@ export function parseContractError(err: unknown): string {
     return `Contract rejected the transaction (error #${contractError[1]}).`;
   }
 
-  const simulationFailed = message.match(/^Simulation failed:\s*(.+)$/s);
+  const simulationFailed = message.match(/^Simulation failed:\s*([\s\S]+)$/);
   if (simulationFailed) {
     return `Transaction would fail: ${simulationFailed[1]}`;
   }
 
-  const txFailed = message.match(/^Transaction failed:\s*(.+)$/s);
+  const txFailed = message.match(/^Transaction failed:\s*([\s\S]+)$/);
   if (txFailed) {
     return `Transaction failed: ${txFailed[1]}`;
   }

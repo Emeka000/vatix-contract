@@ -8,8 +8,11 @@ import { WithdrawForm } from "./WithdrawForm";
 import { LoadingSkeleton } from "./LoadingSkeleton";
 
 interface PositionPanelProps {
-  /** Market to read the connected wallet's live position for. */
-  marketId: string;
+  /**
+   * Market to read the connected wallet's live position for. When omitted
+   * (e.g. a cross-market "your positions" summary), no live read is made.
+   */
+  marketId?: string;
 }
 
 const STROOPS_PER_UNIT = 10_000_000;
@@ -35,7 +38,7 @@ export function PositionPanel({ marketId }: PositionPanelProps) {
   const [position, setPosition] = useState<PositionData | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!address) {
+    if (!address || !marketId) {
       setPosition(null);
       setError(null);
       return;
