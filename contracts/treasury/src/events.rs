@@ -13,6 +13,10 @@
 //! | `FeesWithdrawn`         | `fees_withdrawn`                   |
 //! | `AdminTransferred`      | `admin_transferred`                |
 //! | `MarketContractUpdated` | `market_contract_updated`          |
+//! | `MarketAdded`           | `market_added`                     |
+//! | `MarketRemoved`         | `market_removed`                   |
+//! | `StakeholdersUpdated`   | `stakeholders_updated`             |
+//! | `FeesDistributed`       | `fees_distributed`                 |
 
 use soroban_sdk::{contractevent, Address, Env};
 
@@ -143,6 +147,77 @@ pub fn emit_market_contract_updated(
     MarketContractUpdated {
         old_market_contract: old_market_contract.clone(),
         new_market_contract: new_market_contract.clone(),
+    }
+    .publish(env);
+}
+
+// ── Market registry (add/remove) ──────────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketAdded {
+    #[topic]
+    pub market_contract: Address,
+}
+
+pub fn emit_market_added(env: &Env, market_contract: &Address) {
+    MarketAdded { market_contract: market_contract.clone() }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketRemoved {
+    #[topic]
+    pub market_contract: Address,
+}
+
+pub fn emit_market_removed(env: &Env, market_contract: &Address) {
+    MarketRemoved { market_contract: market_contract.clone() }.publish(env);
+}
+
+// ── Stakeholder fee distribution (#485) ───────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct StakeholdersUpdated {
+    pub stakeholder_count: u32,
+    pub updated_at: u64,
+}
+
+pub fn emit_stakeholders_updated(env: &Env, stakeholder_count: u32) {
+    StakeholdersUpdated {
+        stakeholder_count,
+        updated_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeesDistributed {
+    #[topic]
+    pub token: Address,
+    pub distributed_amount: i128,
+    pub remaining_token_balance: i128,
+    pub stakeholder_count: u32,
+    pub distributed_at: u64,
+}
+
+/// Emitted once per `distribute_fees` call, summarizing the payout across all
+/// configured stakeholders for `token`.
+pub fn emit_fees_distributed(
+    env: &Env,
+    token: &Address,
+    distributed_amount: i128,
+    remaining_token_balance: i128,
+    stakeholder_count: u32,
+) {
+    FeesDistributed {
+        token: token.clone(),
+        distributed_amount,
+        remaining_token_balance,
+        stakeholder_count,
+        distributed_at: env.ledger().timestamp(),
     }
     .publish(env);
 }
