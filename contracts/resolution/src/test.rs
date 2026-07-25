@@ -43,6 +43,7 @@ fn propose_stores_candidate_with_challenge_deadline() {
         &signature(&env),
         &evidence(&env),
         &300,
+        &10_000_000i128,
     );
 
     assert_eq!(candidate_id, 1);
@@ -67,6 +68,7 @@ fn challenge_marks_candidate_and_blocks_finalize() {
         &signature(&env),
         &evidence(&env),
         &300,
+        &10_000_000i128,
     );
 
     let challenger = Address::generate(&env);
@@ -93,6 +95,7 @@ fn finalize_requires_closed_challenge_window() {
         &signature(&env),
         &evidence(&env),
         &300,
+        &10_000_000i128,
     );
 
     let finalizer = Address::generate(&env);
@@ -114,7 +117,7 @@ fn challenge_after_deadline_is_rejected() {
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &evidence(&env), &60);
+    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let challenger = Address::generate(&env);

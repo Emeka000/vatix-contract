@@ -9,8 +9,8 @@ pub mod types;
 mod test;
 
 use crate::error::ContractError;
-use crate::types::{OutcomeTokenConfig, TokenKind};
-use soroban_sdk::{contract, contractimpl, Address, Env};
+use crate::types::{MarketStatus, OutcomeTokenConfig, TokenKind};
+use soroban_sdk::{contract, contractimpl, Address, Env, IntoVal, Symbol};
 
 #[contract]
 pub struct OutcomeTokenContract;
@@ -121,6 +121,51 @@ impl OutcomeTokenContract {
         storage::set_total_supply(&env, market_id, &kind, new_supply);
 
         events::emit_token_burned(&env, market_id, &user, kind, amount, new_balance);
+        Ok(())
+    }
+
+    /// Transfer `amount` tokens of `kind` from `from` to `to` within `market_id`.
+    ///
+    /// Outcome tokens only become transferable once the associated market has
+    /// resolved (checked via a cross-contract call to the registered market
+    /// contract's `get_market_status`). Before resolution, positions can only
+    /// change through [`mint`]/[`burn`] driven by the market contract itself,
+    /// so this keeps a market's price-discovery phase free of secondary-market
+    /// transfers of unsettled claims.
+    pub fn transfer(
+        env: Env,
+        market_id: u32,
+        from: Address,
+        to: Address,
+        kind: TokenKind,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        from.require_auth();
+
+        let config = storage::get_config(&env);
+        let status: MarketStatus = env.invoke_contract(
+            &config.market_contract,
+            &Symbol::new(&env, "get_market_status"),
+            soroban_sdk::vec![&env, market_id.into_val(&env)],
+        );
+        if status != MarketStatus::Resolved {
+            return Err(ContractError::MarketNotResolved);
+        }
+
+        let from_balance = storage::get_balance(&env, market_id, &from, &kind);
+        if from_balance < amount {
+            return Err(ContractError::InsufficientBalance);
+        }
+        storage::set_balance(&env, market_id, &from, &kind, from_balance - amount);
+
+        let to_balance = storage::get_balance(&env, market_id, &to, &kind);
+        let new_to_balance = to_balance.checked_add(amount).ok_or(ContractError::Overflow)?;
+        storage::set_balance(&env, market_id, &to, &kind, new_to_balance);
+
+        events::emit_token_transferred(&env, market_id, &from, &to, kind, amount);
         Ok(())
     }
 

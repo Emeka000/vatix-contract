@@ -13,6 +13,13 @@ pub enum ContractError {
     ChallengeWindowClosed = 6,
     InvalidChallengeWindow = 7,
     InvalidEvidenceUri = 8,
+    /// `appeal` was called after `MAX_APPEAL_ROUNDS` re-proposals were
+    /// already used up for this candidate.
+    AppealLimitExceeded = 9,
+    /// `appeal` was called on a candidate that is not currently `Challenged`.
+    CandidateNotChallenged = 10,
+    /// Bond posted with `propose` was below `MIN_BOND_AMOUNT`.
+    InsufficientBond = 11,
     Unauthorized = 40,
     NotAdmin = 41,
     AlreadyInitialized = 42,

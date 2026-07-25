@@ -3,6 +3,7 @@ use crate::storage;
 use crate::types::{Market, MarketStatus, Position};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{Address, Env};
+use vatix_outcome_token_contract::{types::TokenKind, OutcomeTokenContractClient};
 
 /// Calculate payout for a position based on market outcome
 ///
@@ -126,6 +127,20 @@ pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128
     // Validates eligibility (Resolved + not already settled), computes the
     // payout, marks the position settled, and emits the PositionSettled event.
     let payout = execute_settlement(env, &mut position, &market)?;
+
+    // Merge (retire) this position's outcome tokens now that they have been
+    // redeemed for the collateral payout above. Both the winning and losing
+    // side balances are burned back into nothing so a settled position's
+    // outcome tokens can never be transferred or redeemed a second time.
+    if let Some(outcome_token_address) = storage::get_outcome_token_contract(env) {
+        let token_client = OutcomeTokenContractClient::new(env, &outcome_token_address);
+        if position.yes_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::Yes, &position.yes_shares);
+        }
+        if position.no_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::No, &position.no_shares);
+        }
+    }
 
     // Persist the settled position before paying out.
     storage::set_position(env, market_id, user, &position)?;

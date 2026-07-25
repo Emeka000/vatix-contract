@@ -74,6 +74,31 @@ pub fn emit_candidate_challenged(
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct CandidateAppealedEvent {
+    #[topic]
+    pub candidate_id: u32,
+    #[topic]
+    pub market_id: u32,
+    pub outcome: bool,
+    pub appeal_round: u32,
+    pub evidence_uri: String,
+    pub challenge_deadline: u64,
+}
+
+pub fn emit_candidate_appealed(env: &Env, candidate: &crate::types::ResolutionCandidate) {
+    CandidateAppealedEvent {
+        candidate_id: candidate.id,
+        market_id: candidate.market_id,
+        outcome: candidate.outcome,
+        appeal_round: candidate.appeal_round,
+        evidence_uri: candidate.evidence_uri.clone(),
+        challenge_deadline: candidate.challenge_deadline,
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct CandidateFinalizedEvent {
     #[topic]
     pub candidate_id: u32,
