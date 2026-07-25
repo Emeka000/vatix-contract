@@ -31,15 +31,17 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// 5. Initialize: `stellar contract invoke ... -- initialize --admin <addr>`
 /// 6. Verify old deployment returns `UpgradeRequired` error
 ///
-/// ## Current version: 3
+/// ## Current version: 4
 ///
 /// ### Version history:
+/// - **v4:** Added per-adapter-type `AdapterEnabled` flag for the Reflector/Pyth
+///   Ed25519 fallback path (#488)
 /// - **v3:** Added Treasury, Outcome Token, Resolution Contract, Threshold Signers
 /// - **v2:** Fixed locked_collateral semantics (#262)
 /// - **v1:** Initial storage layout
 ///
 /// See `STORAGE_MIGRATION_GUIDE.md` and `MIGRATION.md` for detailed history.
-pub const STORAGE_VERSION: u32 = 3;
+pub const STORAGE_VERSION: u32 = 4;
 
 #[contracttype]
 pub enum StorageKey {
@@ -68,6 +70,11 @@ pub enum StorageKey {
     /// Flag indicating the contract is paused for emergency maintenance.
     /// When true, all state-mutating operations are rejected.
     Paused,
+    /// Whether the Reflector/Pyth adapter for a given [`AdapterType`] is live.
+    /// Defaults to `false` (disabled) when unset — see #488: while disabled,
+    /// `resolve_market` falls back to direct Ed25519 verification against the
+    /// market's `oracle_pubkey` instead of routing through the adapter.
+    AdapterEnabled(crate::types::AdapterType),
 }
 
 // --- Version helpers ---
@@ -281,6 +288,29 @@ pub fn is_paused(env: &Env) -> bool {
 /// Pause or unpause the contract (emergency halt).
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
+}
+
+// --- Oracle Adapter Enabled Flag (#488) ---
+
+/// Whether the given adapter type is live for resolution.
+///
+/// Defaults to `false` (disabled) when never explicitly configured, which is
+/// the correct default today since the Reflector/Pyth on-chain integration is
+/// not yet wired into `resolve_market` (tracked under #139). While disabled,
+/// callers fall back to direct Ed25519 verification — see
+/// [`crate::oracle::verify_market_outcome`].
+pub fn is_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::AdapterEnabled(adapter_type.clone()))
+        .unwrap_or(false)
+}
+
+/// Enable or disable the given adapter type (admin-gated in `lib.rs`).
+pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, enabled: bool) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
 }
 
 #[cfg(test)]
