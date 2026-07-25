@@ -52,6 +52,9 @@ pub enum ContractError {
     /// Only Active markets accept new trades and collateral deposits.
     MarketNotActive = 5,
 
+    /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
+    WithdrawCooldownActive = 6,
+
     // ========== Position Errors (10-19) ==========
     /// User does not have enough collateral locked to perform this operation.
     ///
@@ -89,6 +92,13 @@ pub enum ContractError {
     /// Outcome must be a valid boolean value.
     InvalidOutcome = 22,
 
+    /// Reflector oracle returned no price for the requested asset.
+    ///
+    /// Occurs when `lastprice(asset)` returns `None` — the asset may be
+    /// unsupported, the oracle may not have a recent price, or the Reflector
+    /// node network may be temporarily disconnected.
+    OraclePriceUnavailable = 23,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///
@@ -109,6 +119,18 @@ pub enum ContractError {
     ///
     /// Questions must be non-empty and reasonably sized (1-499 characters).
     InvalidQuestion = 33,
+
+    /// Outcome count is not exactly 2.
+    ///
+    /// All markets on this protocol are binary (YES/NO). Any attempt to create
+    /// or overwrite a market with an outcome_count other than 2 is rejected.
+    InvalidOutcomeCount = 34,
+
+    /// Admin address is invalid (e.g., contract address or zero address).
+    ///
+    /// The admin must be a valid user account address, not a contract address
+    /// or any special/reserved address.
+    InvalidAdmin = 35,
 
     // ========== Authorization Errors (40-49) ==========
     /// Caller is not authorized to perform this action.
@@ -133,6 +155,12 @@ pub enum ContractError {
     /// or the previous proposal was already accepted.
     NoPendingAdmin = 43,
 
+    /// `confirm_renounce_admin` was called but no renounce proposal is pending.
+    NoRenounceProposal = 44,
+
+    /// A renounce proposal is already pending; cannot propose again until confirmed or canceled.
+    RenounceAlreadyProposed = 45,
+
     // ========== Token Errors (50-59) ==========
     /// Token transfer failed (insufficient balance, approval, etc.).
     ///
@@ -151,6 +179,30 @@ pub enum ContractError {
     /// A migration must be performed before the contract can be used.
     /// On testnet, redeploy and reinitialize the contract.
     UpgradeRequired = 70,
+
+    // ========== Resolution Errors (80-89) ==========
+    /// A resolution contract is registered but no finalized candidate exists
+    /// for this market, or the candidate has been challenged.
+    ///
+    /// Call `ResolutionContract::finalize` first, then retry `resolve_market`.
+    ResolutionNotFinalized = 80,
+
+    // ========== Pause / Initialization Errors (90-99) ==========
+    /// The contract has not been initialized yet.
+    ///
+    /// Admin operations are rejected until `initialize` is called.
+    NotInitialized = 90,
+
+    /// The contract is paused for emergency maintenance.
+    ///
+    /// All state-mutating operations are temporarily disabled.
+    ContractPaused = 91,
+
+    // ========== Security Errors (100-109) ==========
+    /// A reentrant call was detected (e.g. a token contract calling back into
+    /// `deposit_collateral` before the initial call has finished).
+    ReentrantCall = 100,
+
 }
 
 #[cfg(test)]
@@ -164,6 +216,7 @@ mod tests {
         assert_eq!(ContractError::MarketNotResolved as u32, 3);
         assert_eq!(ContractError::MarketExpired as u32, 4);
         assert_eq!(ContractError::MarketNotActive as u32, 5);
+        assert_eq!(ContractError::MarketClosedToDeposits as u32, 6);
         assert_eq!(ContractError::InsufficientCollateral as u32, 10);
         assert_eq!(ContractError::PositionAlreadySettled as u32, 11);
         assert_eq!(ContractError::NoPositionFound as u32, 12);
@@ -171,16 +224,21 @@ mod tests {
         assert_eq!(ContractError::InvalidSignature as u32, 20);
         assert_eq!(ContractError::UnauthorizedOracle as u32, 21);
         assert_eq!(ContractError::InvalidOutcome as u32, 22);
+        assert_eq!(ContractError::OraclePriceUnavailable as u32, 23);
         assert_eq!(ContractError::InvalidPrice as u32, 30);
         assert_eq!(ContractError::InvalidQuantity as u32, 31);
         assert_eq!(ContractError::InvalidTimestamp as u32, 32);
         assert_eq!(ContractError::InvalidQuestion as u32, 33);
+        assert_eq!(ContractError::InvalidFeeRate as u32, 34);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
         assert_eq!(ContractError::NoPendingAdmin as u32, 43);
         assert_eq!(ContractError::TokenTransferFailed as u32, 50);
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
+        assert_eq!(ContractError::NotInitialized as u32, 90);
+        assert_eq!(ContractError::ContractPaused as u32, 91);
+
     }
 
     #[test]

@@ -2,7 +2,7 @@ use soroban_sdk::{contractevent, Address, Env, String};
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct ResolutionRegisteredEvent {
+pub struct ResolutionRegistered {
     #[topic]
     pub factory: Address,
     pub market_contract: Address,
@@ -10,7 +10,7 @@ pub struct ResolutionRegisteredEvent {
 }
 
 pub fn emit_resolution_registered(env: &Env, factory: &Address, market_contract: &Address) {
-    ResolutionRegisteredEvent {
+    ResolutionRegistered {
         factory: factory.clone(),
         market_contract: market_contract.clone(),
         registered_at: env.ledger().timestamp(),
@@ -20,7 +20,7 @@ pub fn emit_resolution_registered(env: &Env, factory: &Address, market_contract:
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct CandidateProposedEvent {
+pub struct CandidateProposed {
     #[topic]
     pub candidate_id: u32,
     #[topic]
@@ -29,23 +29,25 @@ pub struct CandidateProposedEvent {
     pub proposer: Address,
     pub evidence_uri: String,
     pub challenge_deadline: u64,
+    pub signature_expiry: u64,
 }
 
 pub fn emit_candidate_proposed(env: &Env, candidate: &crate::types::ResolutionCandidate) {
-    CandidateProposedEvent {
+    CandidateProposed {
         candidate_id: candidate.id,
         market_id: candidate.market_id,
         outcome: candidate.outcome,
         proposer: candidate.proposer.clone(),
         evidence_uri: candidate.evidence_uri.clone(),
         challenge_deadline: candidate.challenge_deadline,
+        signature_expiry: candidate.signature_expiry,
     }
     .publish(env);
 }
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct CandidateChallengedEvent {
+pub struct CandidateChallenged {
     #[topic]
     pub candidate_id: u32,
     #[topic]
@@ -62,7 +64,7 @@ pub fn emit_candidate_challenged(
     challenger: &Address,
     challenge_uri: &String,
 ) {
-    CandidateChallengedEvent {
+    CandidateChallenged {
         candidate_id,
         market_id,
         challenger: challenger.clone(),
@@ -74,32 +76,7 @@ pub fn emit_candidate_challenged(
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct CandidateAppealedEvent {
-    #[topic]
-    pub candidate_id: u32,
-    #[topic]
-    pub market_id: u32,
-    pub outcome: bool,
-    pub appeal_round: u32,
-    pub evidence_uri: String,
-    pub challenge_deadline: u64,
-}
-
-pub fn emit_candidate_appealed(env: &Env, candidate: &crate::types::ResolutionCandidate) {
-    CandidateAppealedEvent {
-        candidate_id: candidate.id,
-        market_id: candidate.market_id,
-        outcome: candidate.outcome,
-        appeal_round: candidate.appeal_round,
-        evidence_uri: candidate.evidence_uri.clone(),
-        challenge_deadline: candidate.challenge_deadline,
-    }
-    .publish(env);
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct CandidateFinalizedEvent {
+pub struct CandidateFinalized {
     #[topic]
     pub candidate_id: u32,
     #[topic]
@@ -109,7 +86,7 @@ pub struct CandidateFinalizedEvent {
 }
 
 pub fn emit_candidate_finalized(env: &Env, candidate: &crate::types::ResolutionCandidate) {
-    CandidateFinalizedEvent {
+    CandidateFinalized {
         candidate_id: candidate.id,
         market_id: candidate.market_id,
         outcome: candidate.outcome,

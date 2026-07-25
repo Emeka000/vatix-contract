@@ -1,6 +1,5 @@
 use soroban_sdk::contracterror;
 
-/// Error codes for the Vatix resolution candidate contract.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -13,13 +12,10 @@ pub enum ContractError {
     ChallengeWindowClosed = 6,
     InvalidChallengeWindow = 7,
     InvalidEvidenceUri = 8,
-    /// `appeal` was called after `MAX_APPEAL_ROUNDS` re-proposals were
-    /// already used up for this candidate.
-    AppealLimitExceeded = 9,
-    /// `appeal` was called on a candidate that is not currently `Challenged`.
-    CandidateNotChallenged = 10,
-    /// Bond posted with `propose` was below `MIN_BOND_AMOUNT`.
-    InsufficientBond = 11,
+    /// The provided signature has expired and can no longer be finalized.
+    SignatureExpired = 9,
+    /// The provided signature expiry timestamp is invalid (e.g. in the past).
+    InvalidSignatureExpiry = 10,
     Unauthorized = 40,
     NotAdmin = 41,
     AlreadyInitialized = 42,

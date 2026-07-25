@@ -2,57 +2,49 @@ use soroban_sdk::contracterror;
 
 /// Error codes for the Vatix Treasury contract.
 ///
-/// Grouped by category with reserved number ranges mirroring the market
-/// contract's convention:
-/// - Authorization Errors: 40-49
-/// - Validation Errors:    30-39
-/// - Arithmetic Errors:    60-69
-///
-/// # Example
-/// ```ignore
-/// match result {
-///     Err(TreasuryError::Unauthorized)      => println!("Not the market contract"),
-///     Err(TreasuryError::AlreadyInitialized) => println!("Init was already called"),
-///     Ok(_) => {}
-/// }
-/// ```
+/// Ranges:
+/// - Initialization errors: 1–9  (NotInitialized=2, AlreadyInitialized=42 legacy alias)
+/// - Amount / balance errors: 20–29
+/// - Validation errors: 30–39
+/// - Authorization errors: 40–49
+/// - Arithmetic errors: 60–69
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum TreasuryError {
-    // ========== Authorization Errors (40-49) ==========
-    /// Caller is not the registered market contract.
-    ///
-    /// `collect_fee` may only be invoked by the address stored as
-    /// `authorized_market` during initialization.
-    Unauthorized = 40,
+    // ── Upgrade / migration (10–19) ───────────────────────────────────────────
+    /// The on-chain storage version does not match the compiled contract version.
+    /// A migration step must be performed before any storage reads will succeed.
+    UpgradeRequired = 10,
 
-    /// Caller is not the treasury admin.
-    ///
-    /// `withdraw_fees` and admin-only operations require the stored admin.
-    NotAdmin = 41,
+    // ── Amount / balance (20–29) ──────────────────────────────────────────────
+    /// The treasury does not hold enough of `token` to satisfy the withdrawal.
+    InsufficientBalance = 21,
 
-    /// `initialize` has already been called.
-    ///
-    /// The treasury can only be bootstrapped once. Replaying it would allow
-    /// an attacker to hijack the admin slot after initial deploy.
-    AlreadyInitialized = 42,
-
-    // ========== Validation Errors (30-39) ==========
-    /// Amount is zero or negative.
-    ///
-    /// All fee amounts must be strictly positive.
+    // ── Validation (30–39) ────────────────────────────────────────────────────
+    /// `fee_amount` or `amount` is zero or negative.
     InvalidAmount = 31,
 
     /// The treasury has not been initialized yet.
-    ///
-    /// Call `initialize` before invoking any other entry point.
     NotInitialized = 33,
 
-    // ========== Arithmetic Errors (60-69) ==========
+    // ── Authorization (40–49) ─────────────────────────────────────────────────
+    /// `collect_fee` was invoked by an address that is not the registered
+    /// market contract.
+    CallerNotMarket = 40,
+
+    /// Caller is not the treasury admin.
+    Unauthorized = 41,
+
+    /// `initialize` has already been called.
+    AlreadyInitialized = 42,
+
+    // ── Pause (50–59) ─────────────────────────────────────────────────────────
+    /// The treasury is paused; fee collection and withdrawals are suspended.
+    ContractPaused = 50,
+
+    // ── Arithmetic (60–69) ────────────────────────────────────────────────────
     /// Arithmetic operation overflowed.
-    ///
-    /// The cumulative fee amount exceeded `i128::MAX`.
     ArithmeticOverflow = 60,
 }
 
@@ -62,11 +54,14 @@ mod tests {
 
     #[test]
     fn discriminants_are_stable() {
-        assert_eq!(TreasuryError::Unauthorized as u32, 40);
-        assert_eq!(TreasuryError::NotAdmin as u32, 41);
-        assert_eq!(TreasuryError::AlreadyInitialized as u32, 42);
+        assert_eq!(TreasuryError::UpgradeRequired as u32, 10);
+        assert_eq!(TreasuryError::InsufficientBalance as u32, 21);
         assert_eq!(TreasuryError::InvalidAmount as u32, 31);
         assert_eq!(TreasuryError::NotInitialized as u32, 33);
+        assert_eq!(TreasuryError::CallerNotMarket as u32, 40);
+        assert_eq!(TreasuryError::Unauthorized as u32, 41);
+        assert_eq!(TreasuryError::AlreadyInitialized as u32, 42);
         assert_eq!(TreasuryError::ArithmeticOverflow as u32, 60);
+        assert_eq!(TreasuryError::ContractPaused as u32, 50);
     }
 }

@@ -12,6 +12,35 @@ use crate::validation;
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{Address, Env};
 
+/// RAII-style reentrancy guard for the deposit path (Issue #501).
+///
+/// `deposit_collateral` performs an external token transfer (a cross-contract
+/// call) before it finishes updating this contract's own state. Without a
+/// guard, a malicious or upgraded token contract could call back into
+/// `deposit_collateral` from within that transfer and re-enter before the
+/// first call's state update has been persisted. The lock is released
+/// automatically on `Drop`, so it clears on every exit path (success or
+/// error) without needing to touch each `return`/`?` site individually.
+struct DepositReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> DepositReentrancyGuard<'a> {
+    fn acquire(env: &'a Env) -> Result<Self, ContractError> {
+        if storage::is_deposit_locked(env) {
+            return Err(ContractError::ReentrantCall);
+        }
+        storage::set_deposit_locked(env, true);
+        Ok(Self { env })
+    }
+}
+
+impl<'a> Drop for DepositReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        storage::set_deposit_locked(self.env, false);
+    }
+}
+
 /// Deposit USDC collateral into a prediction market
 ///
 /// # Detailed Flow
@@ -52,13 +81,24 @@ pub fn deposit_collateral(
     // Authorization
     user.require_auth();
 
-    // Validation
+    // Reentrancy guard: held for the remainder of this call, released
+    // automatically when it goes out of scope.
+    let _guard = DepositReentrancyGuard::acquire(&env)?;
+
+    // Validation: reject zero or negative deposits explicitly
+    if amount <= 0 {
+        return Err(ContractError::InvalidQuantity);
+    }
     validation::validate_collateral_amount(amount)?;
 
     let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
 
     if market.status != MarketStatus::Active {
         return Err(ContractError::MarketNotActive);
+    }
+
+    if market.closed_to_deposits {
+        return Err(ContractError::MarketClosedToDeposits);
     }
 
     if env.ledger().timestamp() > market.end_time {
@@ -107,6 +147,9 @@ pub fn deposit_collateral(
     // Persist updated position
     storage::set_position(&env, market_id, &user, &position)?;
 
+    // Record deposit timestamp for cooldown enforcement on withdrawals (issue #413).
+    storage::set_last_deposit_time(&env, market_id, &user, env.ledger().timestamp());
+
     // TODO(#issue): consider batching deposit events for gas efficiency
     // Emit event
     emit_collateral_deposited(&env, &user, market_id, amount, position.total_deposited);
@@ -136,6 +179,11 @@ mod tests {
             creator: Address::generate(env),
             created_at: 0,
             collateral_token: collateral_token.clone(),
+            price_bps: 5_000,
+            resolver: None,
+            resolved_at: None,
+            adapter_type: AdapterType::Ed25519,
+            outcome_count: 2,
         }
     }
 
@@ -384,5 +432,144 @@ mod tests {
         });
         assert_eq!(position.total_deposited, deposit_amount + second_deposit);
         assert_eq!(position.locked_collateral, 0);
+    }
+
+    // --- #375: collateral_deposited event contains correct amount and new_total ---
+
+    #[test]
+    fn test_deposit_event_contains_amount_and_new_total() {
+        use soroban_sdk::{
+            testutils::{Events as _, Address as _},
+            IntoVal, Map, Symbol, TryIntoVal, Val,
+        };
+
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let collateral_token = token.address();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        let market = create_test_market(&env, market_id, &collateral_token);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+        });
+
+        env.mock_all_auths();
+        let sac = soroban_sdk::token::StellarAssetClient::new(&env, &collateral_token);
+        sac.mint(&user, &20_000);
+
+        // First deposit
+        let first = 7_000i128;
+        env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, first).unwrap();
+        });
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+
+        // Topic 0 = event name symbol
+        let topic0: soroban_sdk::Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic0, soroban_sdk::Symbol::new(&env, "collateral_deposited"));
+
+        // Topic 1 = user
+        let topic1: Address = last.1.get(1).unwrap().into_val(&env);
+        assert_eq!(topic1, user);
+
+        // Topic 2 = market_id
+        let topic2: u32 = last.1.get(2).unwrap().into_val(&env);
+        assert_eq!(topic2, market_id);
+
+        // Data: amount and new_total
+        let data: Map<Symbol, Val> = last.2.clone().try_into_val(&env).unwrap();
+        let amount_val: i128 = data.get(Symbol::new(&env, "amount")).unwrap().into_val(&env);
+        let new_total_val: i128 = data.get(Symbol::new(&env, "new_total")).unwrap().into_val(&env);
+        assert_eq!(amount_val, first);
+        assert_eq!(new_total_val, first); // first deposit, new_total == amount
+
+        // Second deposit: new_total must reflect the running sum
+        let second = 3_000i128;
+        env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, second).unwrap();
+        });
+
+        let events2 = env.events().all();
+        let last2 = events2.last().unwrap();
+        let data2: Map<Symbol, Val> = last2.2.clone().try_into_val(&env).unwrap();
+        let amount2: i128 = data2.get(Symbol::new(&env, "amount")).unwrap().into_val(&env);
+        let new_total2: i128 = data2.get(Symbol::new(&env, "new_total")).unwrap().into_val(&env);
+        assert_eq!(amount2, second);
+        assert_eq!(new_total2, first + second);
+    }
+
+    // --- #344: market expiry enforcement on deposit ---
+
+    #[test]
+    fn test_deposit_rejected_after_market_expiry() {
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let collateral_token = token.address();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        // Create market with end_time in the past
+        let mut market = create_test_market(&env, market_id, &collateral_token);
+        market.end_time = 0; // expired
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+        });
+
+        env.mock_all_auths();
+        let sac = soroban_sdk::token::StellarAssetClient::new(&env, &collateral_token);
+        sac.mint(&user, &20_000);
+
+        let result = env.as_contract(&contract_id, || {
+            deposit_collateral(env.clone(), user.clone(), market_id, 5_000)
+        });
+        assert_eq!(result, Err(ContractError::MarketExpired));
+    }
+
+    // --- #374: total_deposited accumulates correctly across multiple deposits ---
+
+    #[test]
+    fn test_total_deposited_accumulates_across_multiple_deposits() {
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let collateral_token = token.address();
+        let contract_id = env.register(crate::MarketContract, ());
+
+        let market = create_test_market(&env, market_id, &collateral_token);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+        });
+
+        env.mock_all_auths();
+        soroban_sdk::token::StellarAssetClient::new(&env, &collateral_token).mint(&user, &100_000);
+
+        let deposits = [10_000i128, 5_000, 15_000, 20_000];
+        let mut running = 0i128;
+        for amount in deposits {
+            env.as_contract(&contract_id, || {
+                deposit_collateral(env.clone(), user.clone(), market_id, amount).unwrap();
+            });
+            running += amount;
+
+            let position = env.as_contract(&contract_id, || {
+                storage::get_position(&env, market_id, &user).unwrap().expect("position should exist")
+            });
+            assert_eq!(position.total_deposited, running, "after deposit of {amount}");
+        }
+
+        // Final total must equal sum of all deposits
+        assert_eq!(running, deposits.iter().sum::<i128>());
     }
 }
