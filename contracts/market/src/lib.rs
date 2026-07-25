@@ -52,6 +52,8 @@
 //! | `ThresholdSigners`                  | `Vec<BytesN<32>>` | Multi-signer quorum public keys (#378)           |
 //! | `ThresholdQuorum`                   | `u32`           | Min valid signatures required for resolution (#378)|
 //! | `FeeWaivers`                        | `Vec<Address>`  | Admin-managed fee-exempt address list (#483)       |
+//! | `MarketParticipants(u32)`           | `Vec<Address>`  | Every address that ever held a position (#495)     |
+//! | `PendingFeeRate`                    | `PendingFeeRateChange` | Timelocked fee rate change awaiting execution (#496) |
 
 mod deposit;
 mod error;
@@ -79,6 +81,11 @@ use crate::types::{AdapterType, Market, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use vatix_outcome_token_contract::{OutcomeTokenContractClient, types::TokenKind};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
+
+/// Delay, in seconds, an admin-proposed fee rate change must wait before it
+/// can be applied via `execute_fee_rate_change` (Issue #496). 48 hours gives
+/// integrators and users advance notice of a fee change before it lands.
+pub const FEE_RATE_TIMELOCK_SECONDS: u64 = 172_800;
 
 #[contract]
 pub struct MarketContract;
@@ -711,7 +718,9 @@ impl MarketContract {
         // 4. Enforce that deposited collateral covers any increase in the lock.
         //    Negative-share deltas are left for positions::update_position to
         //    reject (it also emits a PositionLimitExceeded event).
-        let position = storage::get_position(&env, market_id, &user)?
+        let existing_position = storage::get_position(&env, market_id, &user)?;
+        let position = existing_position
+            .clone()
             .unwrap_or_else(|| Position::new_empty(market_id, user.clone()));
         let new_yes = position.yes_shares + yes_delta;
         let new_no = position.no_shares + no_delta;
@@ -734,7 +743,14 @@ impl MarketContract {
                     positions::PositionError::InvalidMarketPrice => ContractError::InvalidPrice,
                 })?;
 
-        // 5a. Mint or burn outcome tokens for the updated position.
+        // 5a. Track first-time participants so the market can later be
+        //     settled page-by-page via `settle_positions_page` (Issue #495)
+        //     without requiring an off-chain index of every trader.
+        if existing_position.is_none() {
+            storage::add_market_participant(&env, market_id, &user);
+        }
+
+        // 5b. Mint or burn outcome tokens for the updated position.
         if let Some(outcome_token_address) = storage::get_outcome_token_contract(&env) {
             let token_client = OutcomeTokenContractClient::new(&env, &outcome_token_address);
             if yes_delta > 0 {
@@ -813,6 +829,34 @@ impl MarketContract {
         settlement::batch_settle_positions(&env, market_id, users)
     }
 
+    /// Settle a bounded page of a resolved market's participants (Issue #495).
+    ///
+    /// Unlike [`batch_settle_positions`], the caller does not supply the user
+    /// list — it is drawn from the on-chain participant registry that
+    /// [`Self::update_position`] maintains, so a market with more positions
+    /// than fit one transaction's resource budget can be fully settled by
+    /// repeated calls, advancing `start_index` to the returned next index
+    /// each time until `is_complete` is `true`.
+    ///
+    /// # Returns
+    /// `(total_payout_this_page, next_index, is_complete)`
+    pub fn settle_positions_page(
+        env: Env,
+        market_id: u32,
+        start_index: u32,
+        limit: u32,
+    ) -> Result<(i128, u32, bool), ContractError> {
+        settlement::settle_positions_page(&env, market_id, start_index, limit)
+    }
+
+    /// Number of distinct addresses that have ever held a position in a market.
+    ///
+    /// Useful to determine how many [`Self::settle_positions_page`] calls are
+    /// needed to fully settle a resolved market.
+    pub fn get_market_participant_count(env: Env, market_id: u32) -> u32 {
+        storage::get_market_participant_count(&env, market_id)
+    }
+
     /// Register the treasury contract address for protocol fee routing.
     ///
     /// Once set, any non-zero withdrawal fee computed during
@@ -839,10 +883,14 @@ impl MarketContract {
         Ok(())
     }
 
-    /// Set the withdrawal fee rate in basis points (0–10_000).
+    /// Propose a new withdrawal fee rate in basis points (0–10_000), subject
+    /// to a timelock (Issue #496) before it takes effect.
     ///
-    /// Only the stored admin may call this. A rate of 0 disables fees.
-    /// The rate must not exceed the configured fee cap (see `set_fee_cap`).
+    /// Only the stored admin may call this. The change does not apply
+    /// immediately — call [`Self::execute_fee_rate_change`] once
+    /// [`FEE_RATE_TIMELOCK_SECONDS`] have elapsed to actually apply it.
+    /// Proposing again before the pending change executes overwrites it with
+    /// a freshly-timed change.
     ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
@@ -864,8 +912,41 @@ impl MarketContract {
         if fee_rate_bps > cap {
             return Err(ContractError::FeeCapExceeded);
         }
-        storage::set_fee_rate_bps(&env, fee_rate_bps);
+
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS;
+        storage::set_pending_fee_rate_change(
+            &env,
+            &crate::types::PendingFeeRateChange {
+                new_rate_bps: fee_rate_bps,
+                effective_at,
+            },
+        );
+        events::emit_fee_rate_change_proposed(&env, fee_rate_bps, effective_at);
         Ok(())
+    }
+
+    /// Apply a previously-proposed fee rate change once its timelock has
+    /// elapsed (Issue #496). Callable by anyone — the timelock itself is the
+    /// access control; there is nothing sensitive about who triggers it.
+    ///
+    /// # Errors
+    /// - [`ContractError::NoPendingFeeChange`] — no change is currently pending.
+    /// - [`ContractError::TimelockNotElapsed`] — `effective_at` has not passed yet.
+    pub fn execute_fee_rate_change(env: Env) -> Result<i128, ContractError> {
+        let pending = storage::get_pending_fee_rate_change(&env)
+            .ok_or(ContractError::NoPendingFeeChange)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+        storage::set_fee_rate_bps(&env, pending.new_rate_bps);
+        storage::clear_pending_fee_rate_change(&env);
+        events::emit_fee_rate_change_executed(&env, pending.new_rate_bps, env.ledger().timestamp());
+        Ok(pending.new_rate_bps)
+    }
+
+    /// Return the currently pending fee rate change, if any (Issue #496).
+    pub fn get_pending_fee_rate_change(env: Env) -> Option<crate::types::PendingFeeRateChange> {
+        storage::get_pending_fee_rate_change(&env)
     }
 
     // ========== Fee Waiver List (#483) ==========
@@ -1351,6 +1432,34 @@ impl MarketContract {
         user: Address,
     ) -> Result<Option<Position>, ContractError> {
         storage::get_position(&env, market_id, &user)
+    }
+
+    /// Return a user's net position across YES and NO shares in a market.
+    ///
+    /// Positive => net long YES, negative => net long NO, zero => hedged (or
+    /// no position at all — a user with no stored `Position` is treated as
+    /// fully hedged at `0`).
+    ///
+    /// # Arguments
+    /// * `market_id` - Market identifier
+    /// * `user` - User address to query
+    ///
+    /// # Example
+    /// ```ignore
+    /// let net = client.get_net_position(&market_id, &user);
+    /// // net > 0  => user is net long YES
+    /// // net < 0  => user is net long NO
+    /// ```
+    pub fn get_net_position(
+        env: Env,
+        market_id: u32,
+        user: Address,
+    ) -> Result<i128, ContractError> {
+        let position = storage::get_position(&env, market_id, &user)?;
+        Ok(match position {
+            Some(p) => positions::calculate_net_position(p.yes_shares, p.no_shares),
+            None => 0,
+        })
     }
 
     /// Return the current fee cap in basis points (defaults to 10_000 when unset).

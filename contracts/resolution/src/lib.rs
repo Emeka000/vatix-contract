@@ -37,7 +37,7 @@ pub mod types;
 mod test;
 
 use crate::error::ContractError;
-use crate::types::{CandidateStatus, ResolutionCandidate, ResolutionConfig};
+use crate::types::{CandidateStatus, MarketStatus, ResolutionCandidate, ResolutionConfig};
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
 
@@ -169,6 +169,14 @@ impl ResolutionContract {
             return Err(ContractError::CandidateAlreadyExists);
         }
 
+        // Reject proposals for a market that is already resolved or canceled
+        // (Issue #497). `CandidateAlreadyExists` above only catches markets
+        // this contract itself has already finalized — a market resolved
+        // through some other path (e.g. an admin-forced `resolve_market`)
+        // would otherwise have no local candidate record to block a
+        // now-meaningless new proposal.
+        require_market_active(&env, &config, market_id)?;
+
         // Verify the provided oracle signature by delegating to the market
         // contract's `verify_signature` entrypoint. This ensures proposals are
         // rejected early if the signature does not verify.
@@ -286,6 +294,11 @@ impl ResolutionContract {
         if candidate.appeal_round >= MAX_APPEAL_ROUNDS {
             return Err(ContractError::AppealLimitExceeded);
         }
+
+        // Defense in depth (Issue #497): the market should be unresolved for
+        // any Challenged candidate under normal operation, but re-check in
+        // case it was resolved/canceled out of band since the challenge.
+        require_market_active(&env, &config, candidate.market_id)?;
 
         // Re-verify the new signed outcome the same way `propose` does.
         let args: Vec<Val> = soroban_sdk::vec![&env,
@@ -471,4 +484,25 @@ fn get_collateral_token(env: &Env, config: &ResolutionConfig, market_id: u32) ->
         &Symbol::new(env, "get_collateral_token"),
         soroban_sdk::vec![env, market_id.into_val(env)],
     )
+}
+
+/// Reject the call if `market_id` is not `Active` on the registered market
+/// contract (Issue #497). Guards against accepting a new resolution proposal
+/// or appeal for a market that has already been resolved or canceled through
+/// some other path (e.g. an admin-forced `resolve_market` call that bypassed
+/// this contract's `finalize`).
+fn require_market_active(
+    env: &Env,
+    config: &ResolutionConfig,
+    market_id: u32,
+) -> Result<(), ContractError> {
+    let status: MarketStatus = env.invoke_contract(
+        &config.market_contract,
+        &Symbol::new(env, "get_market_status"),
+        soroban_sdk::vec![env, market_id.into_val(env)],
+    );
+    if status != MarketStatus::Active {
+        return Err(ContractError::MarketAlreadyResolved);
+    }
+    Ok(())
 }
