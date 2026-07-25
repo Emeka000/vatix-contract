@@ -418,6 +418,74 @@ impl MarketContract {
         Ok(())
     }
 
+    /// Verify an oracle signature for `(market_id, outcome)` without mutating
+    /// any state (#489).
+    ///
+    /// This is the read-only counterpart of the verification step performed
+    /// inside [`resolve_market`]: it delegates to
+    /// [`oracle::verify_market_outcome`] so the exact same signed-payload
+    /// construction, adapter dispatch, and Ed25519 fallback logic (#488) are
+    /// used. The resolution contract's `propose()` calls this cross-contract
+    /// to reject an invalid oracle signature before opening a challenge
+    /// window, rather than only discovering the bad signature later at
+    /// `finalize()` time.
+    ///
+    /// No authorization is required — this never changes contract state, it
+    /// only reports whether `signature` verifies.
+    ///
+    /// # Errors
+    /// - [`ContractError::MarketNotFound`] — the market does not exist.
+    /// - [`ContractError::InvalidSignature`] / [`ContractError::UnauthorizedOracle`]
+    ///   — signature does not verify (see [`oracle::verify_market_outcome`]).
+    pub fn verify_signature(
+        env: Env,
+        market_id: u32,
+        outcome: bool,
+        signature: BytesN<64>,
+    ) -> Result<(), ContractError> {
+        let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        oracle::verify_market_outcome(
+            &env,
+            market_id,
+            &market,
+            market.adapter_type.clone(),
+            outcome,
+            &signature,
+        )
+    }
+
+    /// Enable or disable the Reflector/Pyth oracle adapter for resolution (#488).
+    ///
+    /// Only the stored admin may call this. While an adapter is disabled (the
+    /// default), `resolve_market` and `verify_signature` fall back to direct
+    /// Ed25519 verification of the proof against the market's `oracle_pubkey`
+    /// instead of routing through the (unavailable) adapter — see
+    /// [`oracle::verify_market_outcome`] for the full rationale.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn set_adapter_enabled(
+        env: Env,
+        admin: Address,
+        adapter_type: AdapterType,
+        enabled: bool,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_adapter_enabled(&env, &adapter_type, enabled);
+        events::emit_oracle_adapter_configured(&env, adapter_type, enabled);
+        Ok(())
+    }
+
+    /// Return whether the given oracle adapter type is currently enabled (#488).
+    pub fn is_adapter_enabled(env: Env, adapter_type: AdapterType) -> bool {
+        storage::is_adapter_enabled(&env, &adapter_type)
+    }
+
     /// Cancel a market before it is resolved, halting all further trading.
     ///
     /// Only the stored admin may call this. The market must still be

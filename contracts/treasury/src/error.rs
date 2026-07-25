@@ -25,8 +25,16 @@ pub enum TreasuryError {
     /// `fee_amount` or `amount` is zero or negative.
     InvalidAmount = 31,
 
+    /// Stakeholder share list is empty, or the `share_bps` values do not sum
+    /// to exactly 10_000 (100%).
+    InvalidStakeholderWeights = 32,
+
     /// The treasury has not been initialized yet.
     NotInitialized = 33,
+
+    /// `distribute_fees` was called but no stakeholder list has been
+    /// configured via `set_stakeholders`.
+    NoStakeholdersConfigured = 34,
 
     // ── Authorization (40–49) ─────────────────────────────────────────────────
     /// `collect_fee` was invoked by an address that is not the registered
@@ -57,7 +65,9 @@ mod tests {
         assert_eq!(TreasuryError::UpgradeRequired as u32, 10);
         assert_eq!(TreasuryError::InsufficientBalance as u32, 21);
         assert_eq!(TreasuryError::InvalidAmount as u32, 31);
+        assert_eq!(TreasuryError::InvalidStakeholderWeights as u32, 32);
         assert_eq!(TreasuryError::NotInitialized as u32, 33);
+        assert_eq!(TreasuryError::NoStakeholdersConfigured as u32, 34);
         assert_eq!(TreasuryError::CallerNotMarket as u32, 40);
         assert_eq!(TreasuryError::Unauthorized as u32, 41);
         assert_eq!(TreasuryError::AlreadyInitialized as u32, 42);

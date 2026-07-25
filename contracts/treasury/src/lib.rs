@@ -10,6 +10,27 @@
 //!
 //! ## Authorization model
 //!
+//! | Operation             | Who may call              |
+//! |-----------------------|---------------------------|
+//! | `initialize`          | anyone (once)             |
+//! | `collect_fee`         | any registered market     |
+//! | `withdraw_fees`       | admin                     |
+//! | `add_market`          | admin                     |
+//! | `remove_market`       | admin                     |
+//! | `set_stakeholders`    | admin                     |
+//! | `distribute_fees`     | admin                     |
+//! | Getters               | anyone                    |
+//!
+//! ## Storage layout
+//!
+//! | Key                       | Type                  | Description                              |
+//! |---------------------------|-----------------------|-------------------------------------------|
+//! | `StorageVersion`          | `u32`                 | Schema version guard                      |
+//! | `Admin`                   | `Address`             | Protocol admin                            |
+//! | `AuthorizedMarkets`       | `Vec<Address>`        | Fee-depositing contracts allowed to call `collect_fee` |
+//! | `TokenBalance(Address)`   | `i128`                | Current custodied balance (decreasable)   |
+//! | `CumulativeFees(Address)` | `i128`                | Historical total collected (monotone)     |
+//! | `Stakeholders`            | `Vec<(Address, u32)>` | Revenue-share list, `share_bps` sums to 10_000 (#485) |
 //! | Operation                        | Who may call              |
 //! |-----------------------------------|---------------------------|
 //! | `initialize`                      | anyone (once)             |
@@ -40,6 +61,9 @@ pub use error::TreasuryError;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
+/// Basis-point denominator: stakeholder shares must sum to exactly this value.
+const BPS_DENOMINATOR: i128 = 10_000;
+
 #[contract]
 pub struct TreasuryContract;
 
@@ -58,6 +82,8 @@ impl TreasuryContract {
             return Err(TreasuryError::AlreadyInitialized);
         }
         storage::set_admin(&env, &admin);
+        let mut markets: Vec<Address> = Vec::new(&env);
+        markets.push_back(market_contract.clone());
         let markets = soroban_sdk::vec![&env, market_contract.clone()];
         storage::set_authorized_markets(&env, &markets);
         storage::set_version(&env);
@@ -187,6 +213,8 @@ impl TreasuryContract {
 
     /// Register an additional market contract allowed to call `collect_fee`.
     ///
+    /// Idempotent — adding an already-registered market is a no-op (no
+    /// duplicate entry, no event). Only the admin may call this.
     /// Idempotent: adding an already-registered market is a no-op. Only the
     /// admin may call this.
     pub fn add_market(
@@ -204,6 +232,11 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
+        let mut markets = storage::get_authorized_markets(&env)?;
+        if !markets.contains(&market_contract) {
+            markets.push_back(market_contract.clone());
+            storage::set_authorized_markets(&env, &markets);
+            events::emit_market_added(&env, &market_contract);
         let mut markets = storage::get_authorized_markets(&env);
         if !markets.contains(&market_contract) {
             markets.push_back(market_contract.clone());
@@ -214,7 +247,10 @@ impl TreasuryContract {
 
     /// Deregister a market contract, revoking its ability to call `collect_fee`.
     ///
-    /// Returns [`TreasuryError::CallerNotMarket`] if the address is not registered.
+    /// Only the admin may call this.
+    ///
+    /// # Errors
+    /// - [`TreasuryError::CallerNotMarket`] — `market_contract` is not currently registered.
     pub fn remove_market(
         env: Env,
         caller: Address,
@@ -230,6 +266,27 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
+        let mut markets = storage::get_authorized_markets(&env)?;
+        match markets.first_index_of(&market_contract) {
+            Some(idx) => {
+                markets.remove(idx);
+                storage::set_authorized_markets(&env, &markets);
+                events::emit_market_removed(&env, &market_contract);
+                Ok(())
+            }
+            None => Err(TreasuryError::CallerNotMarket),
+        }
+    }
+
+    /// Replace the entire authorized-market registry with a single market
+    /// contract (full rotation), e.g. after deploying a new market contract
+    /// version. Equivalent to removing every previously registered market and
+    /// calling `add_market` with only `new_market_contract`.
+    ///
+    /// Prefer `add_market`/`remove_market` for incremental registry changes
+    /// when more than one market should remain authorized at a time.
+    ///
+    /// Only the admin may call this.
         let markets = storage::get_authorized_markets(&env);
         if !markets.contains(&market_contract) {
             return Err(TreasuryError::CallerNotMarket);
@@ -263,12 +320,26 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
+        let old = storage::get_authorized_market(&env)?;
+        let mut markets: Vec<Address> = Vec::new(&env);
+        markets.push_back(new_market_contract.clone());
+        storage::set_authorized_markets(&env, &markets);
         let old_markets = storage::get_authorized_markets(&env);
         let old = old_markets.get(0).unwrap_or_else(|| new_market_contract.clone());
         let updated = soroban_sdk::vec![&env, new_market_contract.clone()];
         storage::set_authorized_markets(&env, &updated);
         events::emit_market_contract_updated(&env, &old, &new_market_contract);
         Ok(())
+    }
+
+    /// Return whether `market_contract` is currently authorized to call `collect_fee`.
+    pub fn is_authorized_market(env: Env, market_contract: Address) -> bool {
+        storage::is_authorized_market(&env, &market_contract)
+    }
+
+    /// Return the full list of markets currently authorized to call `collect_fee`.
+    pub fn list_markets(env: Env) -> Result<Vec<Address>, TreasuryError> {
+        storage::get_authorized_markets(&env)
     }
 
     /// Pause the treasury, blocking `collect_fee` and `withdraw_fees`.
@@ -311,6 +382,124 @@ impl TreasuryContract {
         }
         storage::set_paused(&env, false);
         events::emit_treasury_unpaused(&env, &caller);
+        Ok(())
+    }
+
+    // ── Stakeholder fee distribution (#485) ────────────────────────────────────
+
+    /// Configure the stakeholder revenue-share list (admin only).
+    ///
+    /// `stakeholders` is a list of `(address, share_bps)` pairs. `share_bps`
+    /// values must sum to exactly 10_000 (100%); this fully replaces any
+    /// previously configured list.
+    ///
+    /// # Errors
+    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
+    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
+    /// - [`TreasuryError::InvalidStakeholderWeights`] – list is empty, or the
+    ///   `share_bps` values do not sum to exactly 10_000.
+    pub fn set_stakeholders(
+        env: Env,
+        caller: Address,
+        stakeholders: Vec<(Address, u32)>,
+    ) -> Result<(), TreasuryError> {
+        caller.require_auth();
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+        if stakeholders.is_empty() {
+            return Err(TreasuryError::InvalidStakeholderWeights);
+        }
+
+        let mut total: i128 = 0;
+        for (_, share_bps) in stakeholders.iter() {
+            total = total
+                .checked_add(share_bps as i128)
+                .ok_or(TreasuryError::ArithmeticOverflow)?;
+        }
+        if total != BPS_DENOMINATOR {
+            return Err(TreasuryError::InvalidStakeholderWeights);
+        }
+
+        let count = stakeholders.len();
+        storage::set_stakeholders(&env, &stakeholders);
+        events::emit_stakeholders_updated(&env, count);
+        Ok(())
+    }
+
+    /// Return the configured `(stakeholder, share_bps)` list.
+    pub fn get_stakeholders(env: Env) -> Result<Vec<(Address, u32)>, TreasuryError> {
+        storage::get_stakeholders(&env)
+    }
+
+    /// Distribute the treasury's current `token` balance to the configured
+    /// stakeholders, proportionally to their `share_bps` weight (admin only).
+    ///
+    /// Each stakeholder receives `floor(balance * share_bps / 10_000)`. Because
+    /// integer division can leave a small remainder (at most
+    /// `stakeholders.len() - 1` stroops), any dust stays in the treasury's
+    /// `token` balance and rolls into the next distribution rather than being
+    /// lost.
+    ///
+    /// # Errors
+    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
+    /// - [`TreasuryError::ContractPaused`] – treasury is paused.
+    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
+    /// - [`TreasuryError::NoStakeholdersConfigured`] – `set_stakeholders` has
+    ///   never been called.
+    /// - [`TreasuryError::InsufficientBalance`] – the current `token` balance is zero.
+    ///
+    /// # Events
+    /// Emits [`events::FeesDistributed`] once per call, summarizing the total
+    /// amount paid out and the remaining balance.
+    pub fn distribute_fees(env: Env, caller: Address, token: Address) -> Result<(), TreasuryError> {
+        caller.require_auth();
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        if storage::is_paused(&env) {
+            return Err(TreasuryError::ContractPaused);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+
+        let stakeholders = storage::get_stakeholders(&env)?;
+        if stakeholders.is_empty() {
+            return Err(TreasuryError::NoStakeholdersConfigured);
+        }
+
+        let balance = storage::get_token_balance(&env, &token)?;
+        if balance <= 0 {
+            return Err(TreasuryError::InsufficientBalance);
+        }
+
+        let treasury = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+
+        let mut distributed: i128 = 0;
+        for (stakeholder, share_bps) in stakeholders.iter() {
+            let amount = balance
+                .checked_mul(share_bps as i128)
+                .ok_or(TreasuryError::ArithmeticOverflow)?
+                / BPS_DENOMINATOR;
+            if amount > 0 {
+                token_client.transfer(&treasury, &stakeholder, &amount);
+                distributed = distributed
+                    .checked_add(amount)
+                    .ok_or(TreasuryError::ArithmeticOverflow)?;
+            }
+        }
+
+        let remaining = balance - distributed;
+        storage::set_token_balance(&env, &token, remaining);
+
+        events::emit_fees_distributed(&env, &token, distributed, remaining, stakeholders.len());
         Ok(())
     }
 

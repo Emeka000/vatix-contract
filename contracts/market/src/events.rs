@@ -885,6 +885,29 @@ pub fn emit_admin_renounced(env: &Env, admin: &Address) {
     .publish(env);
 }
 
+// ── Oracle adapter enable/disable (#488) ──────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct OracleAdapterConfigured {
+    #[topic]
+    pub adapter_type: crate::types::AdapterType,
+    pub enabled: bool,
+    pub configured_at: u64,
+}
+
+/// Emitted when the admin enables/disables the Reflector or Pyth adapter via
+/// `set_adapter_enabled`. While an adapter is disabled, resolution falls back
+/// to direct Ed25519 verification — see `oracle::verify_market_outcome`.
+pub fn emit_oracle_adapter_configured(
+    env: &Env,
+    adapter_type: crate::types::AdapterType,
+    enabled: bool,
+) {
+    OracleAdapterConfigured {
+        adapter_type,
+        enabled,
+        configured_at: env.ledger().timestamp(),
 // ── Fee waiver list (#483) ────────────────────────────────────────────────────
 
 #[contractevent]
