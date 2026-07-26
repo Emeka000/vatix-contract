@@ -286,6 +286,7 @@ mod tests {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         }
     }
 

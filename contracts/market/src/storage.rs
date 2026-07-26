@@ -86,6 +86,21 @@ pub enum StorageKey {
     MarketParticipants(u32),
     /// Pending fee-rate change awaiting its timelock delay (Issue #496).
     PendingFeeRate,
+    /// Admin-managed list of addresses exempt from withdrawal fees (Issue #483).
+    FeeWaivers,
+    /// Hard upper bound on the withdrawal fee rate in basis points.
+    /// Defaults to `MAX_FEE_RATE_BPS` when unset.
+    FeeCap,
+    /// Ledger timestamp of the most recent deposit for a (market, user) pair
+    /// (Issue #413). Used to enforce the withdrawal cooldown.
+    LastDepositTime(u32, Address),
+    /// Flag set when a renounce-admin proposal is pending (Issue #414).
+    /// Cleared by `confirm_renounce_admin` or `cancel_renounce_admin`.
+    PendingRenounce,
+    /// Ordered list of every market ID ever created, in creation order.
+    /// Enables off-chain indexers to paginate over all markets without
+    /// scanning the full market counter range.
+    MarketIds,
 }
 
 // --- Version helpers ---
@@ -367,6 +382,8 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
     env.storage()
         .persistent()
         .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
+}
+
 // --- Deposit Reentrancy Lock (Issue #501) ---
 
 /// Check whether the deposit reentrancy lock is currently held.
@@ -594,6 +611,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
         env.as_contract(&contract_id, || {
             assert!(!has_market(&env, market_id).unwrap());
@@ -641,6 +659,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
 
         let position = Position {
@@ -731,6 +750,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
 
         env.as_contract(&contract_id, || {

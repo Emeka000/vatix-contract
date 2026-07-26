@@ -61,12 +61,6 @@ pub enum ContractError {
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
     WithdrawCooldownActive = 7,
 
-    /// Deposit attempted into a market that an admin has closed to new deposits.
-    ///
-    /// Set via the `closed_to_deposits` flag; trading, withdrawals, and
-    /// settlement remain unaffected.
-    MarketClosedToDeposits = 7,
-
     // ========== Position Errors (10-19) ==========
     /// User does not have enough collateral locked to perform this operation.
     ///
@@ -151,6 +145,9 @@ pub enum ContractError {
     InvalidMetadataUri = 37,
 
     /// Proposed fee rate exceeds the configured fee cap.
+    ///
+    /// The admin must lower the fee rate to at or below the cap before
+    /// calling `set_fee_rate`.
     FeeCapExceeded = 38,
 
     // ========== Authorization Errors (40-49) ==========
@@ -181,12 +178,6 @@ pub enum ContractError {
 
     /// A renounce proposal is already pending; cannot propose again until confirmed or canceled.
     RenounceAlreadyProposed = 45,
-
-    /// The requested fee rate exceeds the configured fee cap.
-    ///
-    /// The admin must lower the fee rate to at or below the cap before
-    /// calling `set_fee_rate`.
-    FeeCapExceeded = 46,
 
     // ========== Token Errors (50-59) ==========
     /// Token transfer failed (insufficient balance, approval, etc.).
@@ -236,7 +227,6 @@ pub enum ContractError {
 
     /// `execute_fee_rate_change` was called before the timelock delay elapsed.
     TimelockNotElapsed = 111,
-
 }
 
 #[cfg(test)]
@@ -266,9 +256,9 @@ mod tests {
         assert_eq!(ContractError::InvalidQuestion as u32, 33);
         assert_eq!(ContractError::InvalidOutcomeCount as u32, 34);
         assert_eq!(ContractError::InvalidAdmin as u32, 35);
-        assert_eq!(ContractError::InvalidFeeRate as u32, 36);
+        assert_eq!(ContractError::BelowMinDeposit as u32, 36);
         assert_eq!(ContractError::InvalidMetadataUri as u32, 37);
-        assert_eq!(ContractError::BelowMinDeposit as u32, 38);
+        assert_eq!(ContractError::FeeCapExceeded as u32, 38);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
@@ -278,6 +268,8 @@ mod tests {
         assert_eq!(ContractError::NotInitialized as u32, 90);
         assert_eq!(ContractError::ContractPaused as u32, 91);
         assert_eq!(ContractError::ReentrantCall as u32, 100);
+        assert_eq!(ContractError::NoPendingFeeChange as u32, 110);
+        assert_eq!(ContractError::TimelockNotElapsed as u32, 111);
     }
 
     #[test]
@@ -294,5 +286,26 @@ mod tests {
         assert!(ContractError::MarketNotFound < ContractError::InsufficientCollateral);
         assert!(ContractError::InvalidSignature < ContractError::InvalidPrice);
         assert!(ContractError::Unauthorized < ContractError::TokenTransferFailed);
+    }
+
+    #[test]
+    fn test_fee_cap_exceeded_unique_discriminant() {
+        // Ensure FeeCapExceeded sits at 38, in the Validation range, with no
+        // duplicate at the old Authorization-range placeholder (46).
+        assert_eq!(ContractError::FeeCapExceeded as u32, 38);
+    }
+
+    #[test]
+    fn test_market_closed_to_deposits_unique_discriminant() {
+        // MarketClosedToDeposits must be 6; the old duplicate at 7 is now
+        // WithdrawCooldownActive.
+        assert_eq!(ContractError::MarketClosedToDeposits as u32, 6);
+        assert_eq!(ContractError::WithdrawCooldownActive as u32, 7);
+    }
+
+    #[test]
+    fn test_timelock_errors_range() {
+        assert_eq!(ContractError::NoPendingFeeChange as u32, 110);
+        assert_eq!(ContractError::TimelockNotElapsed as u32, 111);
     }
 }

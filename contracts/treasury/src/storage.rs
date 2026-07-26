@@ -52,11 +52,9 @@ pub fn get_version(env: &Env) -> Option<u32> {
     env.storage().instance().get(&StorageKey::StorageVersion)
 }
 
-/// Guard every storage accessor against a stale/pre-migration deployment.
-pub fn assert_version(env: &Env) -> Result<(), TreasuryError> {
 /// Guard used by every versioned storage accessor: rejects reads/writes
 /// against a deployment whose on-chain schema doesn't match this build.
-fn assert_version(env: &Env) -> Result<(), TreasuryError> {
+pub fn assert_version(env: &Env) -> Result<(), TreasuryError> {
     if get_version(env) != Some(STORAGE_VERSION) {
         return Err(TreasuryError::UpgradeRequired);
     }
@@ -99,11 +97,6 @@ pub fn get_authorized_markets(env: &Env) -> Result<Vec<Address>, TreasuryError> 
         .instance()
         .get(&StorageKey::AuthorizedMarkets)
         .unwrap_or_else(|| Vec::new(env)))
-pub fn get_authorized_markets(env: &Env) -> Vec<Address> {
-    env.storage()
-        .instance()
-        .get(&StorageKey::AuthorizedMarkets)
-        .unwrap_or_else(|| Vec::new(env))
 }
 
 pub fn set_authorized_markets(env: &Env, markets: &Vec<Address>) {
@@ -176,7 +169,9 @@ pub fn register_fee_token(env: &Env, token: &Address) {
     let mut tokens = get_fee_tokens(env);
     if !tokens.contains(token) {
         tokens.push_back(token.clone());
-        env.storage().instance().set(&StorageKey::FeeTokens, &tokens);
+        env.storage()
+            .instance()
+            .set(&StorageKey::FeeTokens, &tokens);
     }
 }
 
@@ -207,7 +202,9 @@ pub fn is_paused(env: &Env) -> bool {
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
-    env.storage().instance().set(&StorageKey::Paused, &paused);
+    env.storage()
+        .instance()
+        .set(&StorageKey::Paused, &paused);
 }
 
 // ── Stakeholder revenue share (#485) ──────────────────────────────────────────

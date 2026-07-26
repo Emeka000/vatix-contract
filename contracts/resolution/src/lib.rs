@@ -38,7 +38,8 @@ mod test;
 
 use crate::error::ContractError;
 use crate::types::{CandidateStatus, MarketStatus, ResolutionCandidate, ResolutionConfig};
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
+use soroban_sdk::token::Client as TokenClient;
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
 
 const MIN_CHALLENGE_WINDOW_SECONDS: u64 = 60;

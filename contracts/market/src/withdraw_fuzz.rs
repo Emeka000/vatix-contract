@@ -43,6 +43,7 @@ fn arb_withdraw_state() -> impl Strategy<Value = (i128, i128, i128, i128, i128)>
 }
 
 fn make_market(env: &Env, market_id: u32, collateral_token: &Address) -> Market {
+    use crate::types::AdapterType;
     Market {
         id: market_id,
         question: String::from_str(env, "fuzz?"),
@@ -54,6 +55,11 @@ fn make_market(env: &Env, market_id: u32, collateral_token: &Address) -> Market 
         created_at: 0,
         collateral_token: collateral_token.clone(),
         price_bps: 5_000,
+        resolver: None,
+        resolved_at: None,
+        adapter_type: AdapterType::Ed25519,
+        outcome_count: 2,
+        closed_to_deposits: false,
     }
 }
 
