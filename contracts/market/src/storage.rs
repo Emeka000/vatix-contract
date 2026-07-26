@@ -610,6 +610,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
         env.as_contract(&contract_id, || {
             assert!(!has_market(&env, market_id).unwrap());
@@ -657,6 +658,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
 
         let position = Position {
@@ -747,6 +749,7 @@ mod test {
             resolved_at: None,
             adapter_type: AdapterType::Ed25519,
             outcome_count: 2,
+            closed_to_deposits: false,
         };
 
         env.as_contract(&contract_id, || {

@@ -291,13 +291,6 @@ impl TreasuryContract {
     }
 
     /// Pause the treasury, blocking `collect_fee` and `withdraw_fees`.
-    ///
-    /// Intended for use during contract upgrades or incident response. Only the
-    /// admin may call this.
-    ///
-    /// # Errors
-    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
-    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
     pub fn pause(env: Env, caller: Address) -> Result<(), TreasuryError> {
         caller.require_auth();
         if !storage::has_admin(&env) {
@@ -313,12 +306,6 @@ impl TreasuryContract {
     }
 
     /// Unpause the treasury, restoring normal operation.
-    ///
-    /// Only the admin may call this.
-    ///
-    /// # Errors
-    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
-    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
     pub fn unpause(env: Env, caller: Address) -> Result<(), TreasuryError> {
         caller.require_auth();
         if !storage::has_admin(&env) {
@@ -340,12 +327,6 @@ impl TreasuryContract {
     /// `stakeholders` is a list of `(address, share_bps)` pairs. `share_bps`
     /// values must sum to exactly 10_000 (100%); this fully replaces any
     /// previously configured list.
-    ///
-    /// # Errors
-    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
-    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
-    /// - [`TreasuryError::InvalidStakeholderWeights`] – list is empty, or the
-    ///   `share_bps` values do not sum to exactly 10_000.
     pub fn set_stakeholders(
         env: Env,
         caller: Address,
@@ -440,7 +421,6 @@ impl TreasuryContract {
 
         let remaining = balance - distributed;
         storage::set_token_balance(&env, &token, remaining);
-
         events::emit_fees_distributed(&env, &token, distributed, remaining, stakeholders.len());
         Ok(())
     }
@@ -452,7 +432,7 @@ impl TreasuryContract {
         storage::is_paused(&env)
     }
 
-    /// Return the admin address. Returns `UpgradeRequired` if version mismatches.
+    /// Return the admin address.
     pub fn admin(env: Env) -> Result<Address, TreasuryError> {
         storage::get_admin(&env)
     }
@@ -461,7 +441,7 @@ impl TreasuryContract {
     /// in the authorized-markets registry). Returns `NotInitialized` if no
     /// market has ever been registered.
     pub fn market_contract(env: Env) -> Result<Address, TreasuryError> {
-        storage::get_authorized_markets(&env)
+        storage::get_authorized_markets(&env)?
             .get(0)
             .ok_or(TreasuryError::NotInitialized)
     }
@@ -472,13 +452,11 @@ impl TreasuryContract {
     }
 
     /// Return every market contract currently authorized to call `collect_fee`.
-    pub fn list_markets(env: Env) -> Vec<Address> {
+    pub fn list_markets(env: Env) -> Result<Vec<Address>, TreasuryError> {
         storage::get_authorized_markets(&env)
     }
 
-    /// Return every distinct token mint that has ever had a fee collected for
-    /// it (#484). Useful for admin tooling to discover which per-token
-    /// balances exist without prior knowledge of the token addresses.
+    /// Return every distinct token mint that has ever had a fee collected for it (#484).
     pub fn list_fee_tokens(env: Env) -> Vec<Address> {
         storage::get_fee_tokens(&env)
     }
@@ -489,15 +467,11 @@ impl TreasuryContract {
     }
 
     /// Return the per-token cumulative fees collected for `token` since deployment.
-    ///
-    /// This counter never decreases: admin withdrawals do not affect it.
     pub fn get_cumulative_fees(env: Env, token: Address) -> Result<i128, TreasuryError> {
         storage::get_cumulative_fees(&env, &token)
     }
 
     /// Return the global cumulative fees collected across all tokens since deployment.
-    ///
-    /// Monotone: never decreases regardless of admin withdrawals.
     pub fn total_collected(env: Env) -> Result<i128, TreasuryError> {
         storage::get_total_collected(&env)
     }

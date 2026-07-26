@@ -166,7 +166,9 @@ pub fn register_fee_token(env: &Env, token: &Address) {
     let mut tokens = get_fee_tokens(env);
     if !tokens.contains(token) {
         tokens.push_back(token.clone());
-        env.storage().instance().set(&StorageKey::FeeTokens, &tokens);
+        env.storage()
+            .instance()
+            .set(&StorageKey::FeeTokens, &tokens);
     }
 }
 
@@ -197,7 +199,9 @@ pub fn is_paused(env: &Env) -> bool {
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
-    env.storage().instance().set(&StorageKey::Paused, &paused);
+    env.storage()
+        .instance()
+        .set(&StorageKey::Paused, &paused);
 }
 
 // ── Stakeholder revenue share (#485) ──────────────────────────────────────────
