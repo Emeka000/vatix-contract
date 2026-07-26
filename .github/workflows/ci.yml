@@ -225,6 +225,20 @@ jobs:
           echo "Bindings output:"
           ls -lh apps/web/lib/contracts/
 
+      # Fails the build if the bindings just generated above differ from what
+      # is committed in git. This catches drift where a contributor changed a
+      # contract's public interface (or the generator itself) without
+      # regenerating and committing the bindings under apps/web/lib/contracts/.
+      - name: Fail on stale committed bindings
+        run: |
+          if ! git diff --exit-code -- apps/web/lib/contracts; then
+            echo ""
+            echo "ERROR: Generated TypeScript bindings differ from what is committed."
+            echo "Run 'pnpm build:bindings' locally and commit the resulting changes"
+            echo "under apps/web/lib/contracts/."
+            exit 1
+          fi
+
       - name: Lint web app
         run: pnpm --filter web lint
 

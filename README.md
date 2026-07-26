@@ -109,6 +109,8 @@ The Market Contract still owns the final `resolve_market(market_id, outcome, sig
 
 ## Event Catalog
 
+> For the complete, up-to-date field reference across **all four contracts** (Market, Treasury, Resolution, Outcome Token), see [`docs/events-reference.md`](docs/events-reference.md) — the canonical schema reference for off-chain indexers. The table below covers a subset of Market events for a quick overview.
+
 The Market Contract emits the following events for off-chain indexing and tracking:
 
 | Event | Topics | Fields | Description |
@@ -231,6 +233,29 @@ bash scripts/deploy.sh
 
 > Requires Stellar CLI and a funded account. Set `SOROBAN_NETWORK` and `SOROBAN_ACCOUNT` env vars before running.
 
+### Testnet contract registry
+
+[`deployments/testnet.json`](deployments/testnet.json) (schema documented in [`deployments/README.md`](deployments/README.md)) is the single source of truth for testnet contract IDs, network passphrase, and RPC URL. After deploying a contract, record its ID there so `apps/web` and the scripts below can pick it up. Until a real deploy happens, `contractId` fields are empty-string placeholders.
+
+### Testnet smoke test
+
+`scripts/testnet-smoke.sh` performs a **read-only, simulate-only** invocation (`stellar contract invoke --send=no`) against a deployed Market contract on testnet, to confirm it's reachable — no signing or secret key is required.
+
+```bash
+pnpm testnet:smoke
+# or
+bash scripts/testnet-smoke.sh
+```
+
+**What it needs:**
+- The `stellar` CLI on PATH
+- A market contract ID, resolved from (in order): the `MARKET_CONTRACT_ID` env var, or `.contracts.market.contractId` in `deployments/testnet.json`
+- RPC URL / network passphrase, resolved from `SOROBAN_RPC_URL` / `NETWORK_PASSPHRASE` env vars, else the registry file, else the default Stellar testnet values (`https://soroban-testnet.stellar.org`, `Test SDF Network ; September 2015`)
+
+If no contract ID is configured, or the `stellar` CLI isn't installed, the script prints a message and exits `0` (guard mode) instead of failing — it's safe to run on a fresh checkout before any testnet deployment exists.
+
+> **Freighter is not needed here.** Freighter (the browser wallet) is only required for *signed* testnet interactions from the web app; this script never signs or submits a transaction.
+
 ### Build Verification
 
 To verify your local WASM matches what CI produces, compare hashes:
@@ -300,6 +325,22 @@ Example artifacts:
 - `vatix_treasury_contract.wasm`
 - `vatix_outcome_token_contract.wasm`
 - `vatix_resolution_contract.wasm`
+
+### Regenerating contract bindings
+
+The web app consumes auto-generated TypeScript bindings for each contract, committed under [`apps/web/lib/contracts/`](apps/web/lib/contracts/README.md). Regenerate them locally whenever a contract's public interface changes:
+
+```bash
+pnpm build:bindings
+```
+
+**Prerequisites:**
+- Stellar CLI **v21+** on PATH
+- Rust `wasm32-unknown-unknown` and `wasm32v1-none` targets installed
+
+This runs `scripts/generate-bindings.ts`, which builds every contract to WASM and generates fresh TypeScript clients into `apps/web/lib/contracts/`. **Commit the resulting changes** alongside your contract change.
+
+The `frontend` CI job regenerates bindings on every push/PR and fails with `git diff --exit-code` if the committed output under `apps/web/lib/contracts/` differs from what was just generated — so stale bindings will block CI until you run `pnpm build:bindings` and commit the diff.
 
 ## Scripts
 
