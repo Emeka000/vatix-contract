@@ -86,20 +86,19 @@ pub enum StorageKey {
     MarketParticipants(u32),
     /// Pending fee-rate change awaiting its timelock delay (Issue #496).
     PendingFeeRate,
+    /// Timestamp of the last deposit made by a user in a market (issue #413).
+    /// Used to enforce the withdrawal cooldown period.
+    LastDepositTime(u32, Address),
+    /// Flag indicating a pending admin renounce proposal (issue #414).
+    /// Set when an admin initiates a renounce; cleared on confirm or cancel.
+    PendingRenounce,
     /// Admin-managed list of addresses exempt from withdrawal fees (Issue #483).
     FeeWaivers,
     /// Hard upper bound on the withdrawal fee rate in basis points.
-    /// Defaults to `MAX_FEE_RATE_BPS` when unset.
+    /// Prevents the admin from setting a fee rate above this cap.
     FeeCap,
-    /// Ledger timestamp of the most recent deposit for a (market, user) pair
-    /// (Issue #413). Used to enforce the withdrawal cooldown.
-    LastDepositTime(u32, Address),
-    /// Flag set when a renounce-admin proposal is pending (Issue #414).
-    /// Cleared by `confirm_renounce_admin` or `cancel_renounce_admin`.
-    PendingRenounce,
-    /// Ordered list of every market ID ever created, in creation order.
-    /// Enables off-chain indexers to paginate over all markets without
-    /// scanning the full market counter range.
+    /// Ordered list of all market IDs ever created (append-only).
+    /// Used by off-chain indexers to enumerate all markets.
     MarketIds,
 }
 

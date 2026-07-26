@@ -19,20 +19,20 @@
 //! | `set_market_contract`              | admin                     |
 //! | `set_stakeholders`                 | admin                     |
 //! | `distribute_fees`                  | admin                     |
-//! | `pause` / `unpause`                | admin                     |
 //! | Getters                            | anyone                    |
 //!
 //! ## Storage layout
 //!
-//! | Key                       | Type                  | Description                              |
-//! |---------------------------|-----------------------|------------------------------------------|
-//! | `StorageVersion`          | `u32`                 | Schema version guard                     |
-//! | `Admin`                   | `Address`             | Protocol admin                           |
+//! | Key                       | Type                  | Description                               |
+//! |---------------------------|-----------------------|-------------------------------------------|
+//! | `StorageVersion`          | `u32`                 | Schema version guard                      |
+//! | `Admin`                   | `Address`             | Protocol admin                            |
 //! | `AuthorizedMarkets`       | `Vec<Address>`        | Market contracts allowed to call `collect_fee` |
 //! | `TokenBalance(Address)`   | `i128`                | Current custodied balance per token (decreasable) |
 //! | `CumulativeFees(Address)` | `i128`                | Historical total collected per token (monotone)   |
+//! | `TotalCollected`          | `i128`                | Global monotone counter across all tokens |
 //! | `Stakeholders`            | `Vec<(Address, u32)>` | Revenue-share list, `share_bps` sums to 10_000 (#485) |
-//! | `FeeTokens`               | `Vec<Address>`        | Registry of every token ever collected (#484)     |
+//! | `FeeTokens`               | `Vec<Address>`        | Registry of every token ever collected (#484) |
 
 pub mod error;
 pub mod events;
@@ -107,9 +107,7 @@ impl TreasuryContract {
         storage::register_fee_token(&env, &token);
 
         let prev_balance = storage::get_token_balance(&env, &token)?;
-        let new_balance = prev_balance
-            .checked_add(fee_amount)
-            .unwrap_or(i128::MAX);
+        let new_balance = prev_balance.checked_add(fee_amount).unwrap_or(i128::MAX);
         storage::set_token_balance(&env, &token, new_balance);
 
         let prev_cumulative = storage::get_cumulative_fees(&env, &token)?;
@@ -201,8 +199,8 @@ impl TreasuryContract {
 
     /// Register an additional market contract allowed to call `collect_fee`.
     ///
-    /// Idempotent: adding an already-registered market is a no-op (no
-    /// duplicate entry, no event). Only the admin may call this.
+    /// Idempotent — adding an already-registered market is a no-op. Only the
+    /// admin may call this.
     pub fn add_market(
         env: Env,
         caller: Address,
@@ -218,7 +216,7 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let mut markets = storage::get_authorized_markets(&env)?;
+        let mut markets = storage::get_authorized_markets(&env);
         if !markets.contains(&market_contract) {
             markets.push_back(market_contract.clone());
             storage::set_authorized_markets(&env, &markets);
@@ -248,16 +246,19 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let mut markets = storage::get_authorized_markets(&env)?;
-        match markets.first_index_of(&market_contract) {
-            Some(idx) => {
-                markets.remove(idx);
-                storage::set_authorized_markets(&env, &markets);
-                events::emit_market_removed(&env, &market_contract);
-                Ok(())
-            }
-            None => Err(TreasuryError::CallerNotMarket),
+        let markets = storage::get_authorized_markets(&env);
+        if !markets.contains(&market_contract) {
+            return Err(TreasuryError::CallerNotMarket);
         }
+        let mut updated = Vec::new(&env);
+        for m in markets.iter() {
+            if m != market_contract {
+                updated.push_back(m);
+            }
+        }
+        storage::set_authorized_markets(&env, &updated);
+        events::emit_market_removed(&env, &market_contract);
+        Ok(())
     }
 
     /// Rotate the full set of authorized markets to a single new market
@@ -279,7 +280,7 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let old_markets = storage::get_authorized_markets(&env)?;
+        let old_markets = storage::get_authorized_markets(&env);
         let old = old_markets
             .get(0)
             .unwrap_or_else(|| new_market_contract.clone());
@@ -288,8 +289,6 @@ impl TreasuryContract {
         events::emit_market_contract_updated(&env, &old, &new_market_contract);
         Ok(())
     }
-
-    // ── Pause / Unpause ────────────────────────────────────────────────────────
 
     /// Pause the treasury, blocking `collect_fee` and `withdraw_fees`.
     pub fn pause(env: Env, caller: Address) -> Result<(), TreasuryError> {
@@ -368,6 +367,18 @@ impl TreasuryContract {
 
     /// Distribute the treasury's current `token` balance to the configured
     /// stakeholders, proportionally to their `share_bps` weight (admin only).
+    ///
+    /// Each stakeholder receives `floor(balance * share_bps / 10_000)`. Any
+    /// integer-division remainder (dust) stays in the treasury balance and
+    /// rolls into the next distribution.
+    ///
+    /// # Errors
+    /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
+    /// - [`TreasuryError::ContractPaused`] – treasury is paused.
+    /// - [`TreasuryError::Unauthorized`] – caller is not the admin.
+    /// - [`TreasuryError::NoStakeholdersConfigured`] – `set_stakeholders` has
+    ///   never been called.
+    /// - [`TreasuryError::InsufficientBalance`] – the current `token` balance is zero.
     pub fn distribute_fees(env: Env, caller: Address, token: Address) -> Result<(), TreasuryError> {
         caller.require_auth();
         if !storage::has_admin(&env) {

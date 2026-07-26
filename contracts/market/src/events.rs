@@ -951,6 +951,7 @@ pub fn emit_oracle_adapter_configured(
     }
     .publish(env);
 }
+
 // ── Fee waiver list (#483) ────────────────────────────────────────────────────
 
 #[contractevent]
