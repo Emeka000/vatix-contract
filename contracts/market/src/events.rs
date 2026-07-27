@@ -23,6 +23,7 @@
 //! | `TreasurySet`            | `treasury_set`                      |
 //! | `AdminTransferProposed`  | `admin_transfer_proposed`           |
 //! | `AdminTransferAccepted`  | `admin_transfer_accepted`           |
+//! | `AdminTransferCanceled`  | `admin_transfer_canceled`           |
 //!
 //! # Event schema versioning (Issue #500)
 //!
@@ -786,6 +787,32 @@ pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &
         old_admin: old_admin.clone(),
         new_admin: new_admin.clone(),
         accepted_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferCanceled {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub canceled_pending_admin: Address,
+    pub canceled_at: u64,
+}
+
+pub fn emit_admin_transfer_canceled(
+    env: &Env,
+    current_admin: &Address,
+    canceled_pending_admin: &Address,
+) {
+    AdminTransferCanceled {
+        version: EVENT_VERSION,
+        current_admin: current_admin.clone(),
+        canceled_pending_admin: canceled_pending_admin.clone(),
+        canceled_at: env.ledger().timestamp(),
     }
     .publish(env);
 }
