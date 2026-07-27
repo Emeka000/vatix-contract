@@ -1112,6 +1112,79 @@ mod test {
         client.accept_admin(&attacker);
     }
 
+    // ========== cancel_admin_transfer tests ==========
+
+    #[test]
+    fn test_cancel_admin_transfer_clears_pending() {
+        let (env, admin, client, contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+        client.cancel_admin_transfer(&admin);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(storage::get_pending_admin(&env), None);
+        });
+    }
+
+    #[test]
+    fn test_cancel_admin_transfer_emits_event() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+        env.events().all(); // drain proposed event before asserting on cancel
+        client.cancel_admin_transfer(&admin);
+
+        let events = env.events().all();
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #41)")]
+    fn test_cancel_admin_transfer_non_admin_fails() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+        client.cancel_admin_transfer(&attacker);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #43)")]
+    fn test_cancel_admin_transfer_with_no_pending_fails() {
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        client.cancel_admin_transfer(&admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #43)")]
+    fn test_canceled_nomination_cannot_be_accepted() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+        client.cancel_admin_transfer(&admin);
+
+        // The nomination was canceled, so acceptance must fail with
+        // NoPendingAdmin (#43) rather than succeeding.
+        client.accept_admin(&new_admin);
+    }
+
+    #[test]
+    fn test_canceled_nomination_cannot_be_accepted_try_variant() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let new_admin = Address::generate(&env);
+
+        client.propose_admin(&admin, &new_admin);
+        client.cancel_admin_transfer(&admin);
+
+        let result = client.try_accept_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn test_set_treasury_records_contract_address() {
         let (env, admin, client, contract_id) = create_test_contract();

@@ -57,6 +57,9 @@
 //! | `FeeWaivers`                        | `Vec<Address>`  | Admin-managed fee-exempt address list (#483)       |
 //! | `MarketParticipants(u32)`           | `Vec<Address>`  | Every address that ever held a position (#495)     |
 //! | `PendingFeeRate`                    | `PendingFeeRateChange` | Timelocked fee rate change awaiting execution (#496) |
+//! | `Paused`                            | `bool`          | Emergency pause flag; blocks state-mutating calls  |
+//! | `AdapterEnabled(AdapterType)`       | `bool`          | Whether the Reflector/Pyth adapter is live (#488)  |
+//! | `DepositLock`                       | `bool`          | Reentrancy lock for `deposit_collateral` (#501)    |
 
 mod deposit;
 mod error;
@@ -240,6 +243,39 @@ impl MarketContract {
         storage::set_admin(&env, &new_admin);
         storage::clear_pending_admin(&env);
         events::emit_admin_transfer_accepted(&env, &old_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Cancel an outstanding two-step admin transfer nomination.
+    ///
+    /// Only the current admin may call this. Clears the pending nomination
+    /// set by [`propose_admin`] so it can no longer be accepted via
+    /// [`accept_admin`]. Safe to call at any time before acceptance; has no
+    /// effect on the current admin.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `current_admin` - Current admin authorizing the cancellation
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – contract is not initialized or `current_admin` is not the stored admin
+    /// - [`ContractError::NoPendingAdmin`] – no nomination is outstanding to cancel
+    pub fn cancel_admin_transfer(env: Env, current_admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotAdmin);
+        }
+
+        let stored_admin = storage::get_admin(&env)?;
+        if current_admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        current_admin.require_auth();
+
+        let pending = storage::get_pending_admin(&env).ok_or(ContractError::NoPendingAdmin)?;
+        storage::clear_pending_admin(&env);
+        events::emit_admin_transfer_canceled(&env, &current_admin, &pending);
+
         Ok(())
     }
 

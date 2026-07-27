@@ -5,12 +5,13 @@
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [When to Bump Storage Version](#when-to-bump-storage-version)
-3. [Migration Procedures](#migration-procedures)
-4. [Testing Migrations](#testing-migrations)
-5. [Rollback and Recovery](#rollback-and-recovery)
-6. [Common Pitfalls](#common-pitfalls)
-7. [Version History](#version-history)
+2. [Reviewer Checklist: StorageKey Table Drift](#reviewer-checklist-storagekey-table-drift)
+3. [When to Bump Storage Version](#when-to-bump-storage-version)
+4. [Migration Procedures](#migration-procedures)
+5. [Testing Migrations](#testing-migrations)
+6. [Rollback and Recovery](#rollback-and-recovery)
+7. [Common Pitfalls](#common-pitfalls)
+8. [Version History](#version-history)
 
 ---
 
@@ -46,6 +47,58 @@ Every storage operation calls `assert_version()` to verify the on-chain version 
 - Safe contract upgrades
 - Clear migration paths
 - Protection against accidental downgrades
+
+---
+
+## Reviewer Checklist: StorageKey Table Drift
+
+The contract has two independent descriptions of storage that must always
+agree:
+
+1. The **`StorageKey` enum** in `src/storage.rs` — the actual, compiled
+   source of truth for what can be written to storage.
+2. The **`## Storage layout` doc table** at the top of `src/lib.rs` — a
+   human-readable summary intended for reviewers and integrators.
+
+Nothing in the compiler enforces that these two stay in sync — the table is
+plain doc-comment prose, so it silently drifts whenever a `StorageKey`
+variant is added, removed, or renamed without a matching table edit. Check
+this on every PR that touches `src/storage.rs` or adds/removes a stored
+type:
+
+- [ ] **List every `StorageKey` variant.** Open `src/storage.rs` and read
+      the full `pub enum StorageKey { ... }` block.
+- [ ] **List every table row.** Open the `## Storage layout` table near the
+      top of `src/lib.rs` (in the crate-level `//!` doc comment).
+- [ ] **Diff the two lists by hand.** Every enum variant must have exactly
+      one corresponding table row (and vice versa — a table row for a key
+      that was removed from the enum is just as much drift as a missing
+      row).
+- [ ] **Check the `Type` and `Description` columns**, not just variant
+      names — a field-type change on a variant (e.g. `Address` -> `Vec<Address>`)
+      should also update the table's `Type` column.
+- [ ] **Cross-check against `STORAGE_VERSION` bumps** — see
+      [When to Bump Storage Version](#when-to-bump-storage-version). Most
+      changes that require a version bump also change what belongs in this
+      table.
+
+A quick local spot-check (not a substitute for reading both lists, but a
+useful smoke test) — count that both files mention the same number of
+variant identifiers:
+
+```bash
+# Enum variant names in storage.rs (rough count, ignores tuple payloads)
+grep -oE '^\s{4}[A-Z][A-Za-z]+' contracts/market/src/storage.rs | sort -u
+
+# Row labels in the lib.rs doc table
+grep -oE '\| `[A-Za-z]+' contracts/market/src/lib.rs | sort -u
+```
+
+**Known example this checklist caught:** as of this writing, `Paused`,
+`AdapterEnabled(AdapterType)`, and `DepositLock` exist in the `StorageKey`
+enum but were missing from the `lib.rs` table — now fixed alongside this
+checklist. Treat any future mismatch the same way: fix the table in the
+same PR that changes the enum, don't defer it.
 
 ---
 

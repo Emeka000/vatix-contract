@@ -191,6 +191,41 @@ jobs:
       - name: Invoke example (echo guard)
         run: bash scripts/invoke-example.sh
 
+  build-contracts:
+    name: Build all contract crates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      # Focused compile check for every contract crate, run on every PR.
+      # Unlike the `ci` job's `stellar contract build` steps (which build
+      # release WASM artifacts as part of a longer pipeline), these steps
+      # are a fast, dedicated `cargo build -p <crate>` per crate so a
+      # compile error in any one contract fails CI red on its own, without
+      # depending on the rest of the test/lint pipeline succeeding first.
+      - name: Build market contract crate
+        run: cargo build -p vatix-market-contract
+
+      - name: Build treasury contract crate
+        run: cargo build -p vatix-treasury-contract
+
+      - name: Build resolution contract crate
+        run: cargo build -p vatix-resolution-contract
+
+      - name: Build outcome-token contract crate
+        run: cargo build -p vatix-outcome-token-contract
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest

@@ -44,6 +44,7 @@ See [`docs/cross-contract-call-graph.md`](docs/cross-contract-call-graph.md) for
 The Market contract uses storage versioning to ensure data integrity across upgrades. See comprehensive documentation:
 
 - **[Storage Migration Guide](contracts/market/STORAGE_MIGRATION_GUIDE.md)** - Complete guide for handling storage version bumps, including:
+  - [Reviewer checklist for `StorageKey` table drift](contracts/market/STORAGE_MIGRATION_GUIDE.md#reviewer-checklist-storagekey-table-drift) - how to verify the `StorageKey` enum and the `lib.rs` storage table stay in sync
   - When to bump storage version
   - Step-by-step migration procedures (testnet & mainnet)
   - Testing strategies
