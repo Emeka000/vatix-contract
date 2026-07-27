@@ -37,8 +37,7 @@
 
 use crate::error::ContractError;
 use crate::events::{
-    emit_collateral_withdrawn, emit_fee_calculated, emit_fee_retained_no_treasury,
-    emit_withdraw_edge_case,
+    emit_collateral_withdrawn, emit_fee_calculated, emit_large_withdraw, emit_withdraw_edge_case,
 };
 use crate::storage;
 use crate::types::{MarketStatus, Position};
@@ -49,6 +48,10 @@ use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 
 /// Seconds a user must wait after their last deposit before withdrawing (issue #413).
 const WITHDRAW_COOLDOWN_SECONDS: u64 = 3_600;
+
+/// Withdrawn amount (in stroops) at or above which a dedicated audit event is
+/// emitted so operators/indexers can flag unusual outflows (#502).
+pub const LARGE_WITHDRAW_THRESHOLD: i128 = 1_000_000_0000000;
 
 /// Withdraw `amount` of unused (unlocked) collateral from a market.
 ///
@@ -172,6 +175,13 @@ pub fn withdraw_unused_collateral(
     token_client.transfer(&contract_address, &user, &amount);
 
     emit_collateral_withdrawn(&env, &user, market_id, amount, position.total_deposited);
+
+    // Audit log for large withdraws (#502): flagged independently of the fee
+    // path so operators/indexers can spot unusual outflows without parsing
+    // every CollateralWithdrawn event.
+    if amount >= LARGE_WITHDRAW_THRESHOLD {
+        emit_large_withdraw(&env, &user, market_id, amount, env.ledger().timestamp());
+    }
 
     Ok(())
 }
@@ -640,5 +650,83 @@ mod tests {
             withdraw_unused_collateral(env.clone(), user.clone(), market_id, 1)
         });
         assert_eq!(result, Err(ContractError::InsufficientCollateral));
+    }
+
+    /// #502: withdrawals below the large-withdraw threshold must not emit the
+    /// audit event (only the regular CollateralWithdrawn event fires).
+    #[test]
+    fn test_withdraw_below_threshold_no_audit_event() {
+        use soroban_sdk::token::StellarAssetClient;
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let amount = LARGE_WITHDRAW_THRESHOLD - 1;
+        let position = Position {
+            market_id, user: user.clone(),
+            yes_shares: 0, no_shares: 0,
+            locked_collateral: 0, total_deposited: amount, is_settled: false,
+        };
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &amount);
+        env.events().all(); // clear setup events
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, amount)
+        });
+        assert!(result.is_ok());
+        let events = env.events().all();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.topics.iter().any(|t| t.to_string().contains("large_withdraw"))),
+            "LargeWithdraw audit event should not be emitted below threshold"
+        );
+    }
+
+    /// #502: withdrawals at/above the large-withdraw threshold must emit the
+    /// dedicated audit event alongside the regular withdraw event.
+    #[test]
+    fn test_withdraw_above_threshold_emits_audit_event() {
+        use soroban_sdk::token::StellarAssetClient;
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let amount = LARGE_WITHDRAW_THRESHOLD;
+        let position = Position {
+            market_id, user: user.clone(),
+            yes_shares: 0, no_shares: 0,
+            locked_collateral: 0, total_deposited: amount, is_settled: false,
+        };
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &amount);
+        env.events().all(); // clear setup events
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, amount)
+        });
+        assert!(result.is_ok());
+        let events = env.events().all();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.topics.iter().any(|t| t.to_string().contains("large_withdraw"))),
+            "LargeWithdraw audit event should be emitted at/above threshold"
+        );
     }
 }

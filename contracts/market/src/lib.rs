@@ -34,6 +34,9 @@
 //! | `settle_position` / `batch_settle` | any user (resolved market)      |
 //! | `update_market_oracle`             | admin                           |
 //! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
+//! | `pause` / `unpause`                | admin                           |
+//! | `set_resolution_contract`          | admin                           |
+//! | `set_fee_cap`                      | admin                           |
 //!
 //! ## Storage layout
 //!
@@ -72,6 +75,8 @@ pub mod storage;
 mod test;
 #[cfg(test)]
 mod withdraw_fuzz;
+#[cfg(test)]
+mod tests_vectors;
 pub mod types;
 #[allow(dead_code)]
 mod validation;
@@ -491,6 +496,51 @@ impl MarketContract {
     /// Return whether the given oracle adapter type is currently enabled (#488).
     pub fn is_adapter_enabled(env: Env, adapter_type: AdapterType) -> bool {
         storage::is_adapter_enabled(&env, &adapter_type)
+    }
+
+    /// Pause the contract for emergency maintenance.
+    ///
+    /// While paused, `deposit_collateral`, `withdraw_unused_collateral`,
+    /// `update_position`, `initialize_market`, `cancel_market`,
+    /// `resolve_market`, and `resolve_market_threshold` all reject with
+    /// [`ContractError::ContractPaused`] via [`validation::require_not_paused`].
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_paused(&env, true);
+        events::emit_emergency_pause_toggled(&env, true);
+        Ok(())
+    }
+
+    /// Unpause the contract, restoring normal operation.
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_paused(&env, false);
+        events::emit_emergency_pause_toggled(&env, false);
+        Ok(())
+    }
+
+    /// Return whether the contract is currently paused for emergency maintenance.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
     }
 
     /// Cancel a market before it is resolved, halting all further trading.
@@ -937,16 +987,46 @@ impl MarketContract {
     /// # Errors
     /// - [`ContractError::NoPendingFeeChange`] — no change is currently pending.
     /// - [`ContractError::TimelockNotElapsed`] — `effective_at` has not passed yet.
+    /// - [`ContractError::FeeCapExceeded`] — the pending rate exceeds the
+    ///   *current* fee cap. The cap is re-checked here (not just at proposal
+    ///   time in [`Self::set_fee_rate`]) so a cap lowered by the admin while a
+    ///   change is in flight cannot let a stale, now-excessive rate through.
     pub fn execute_fee_rate_change(env: Env) -> Result<i128, ContractError> {
         let pending = storage::get_pending_fee_rate_change(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::TimelockNotElapsed);
         }
+        let cap = storage::get_fee_cap_bps(&env);
+        if pending.new_rate_bps > cap {
+            return Err(ContractError::FeeCapExceeded);
+        }
         storage::set_fee_rate_bps(&env, pending.new_rate_bps);
         storage::clear_pending_fee_rate_change(&env);
         events::emit_fee_rate_change_executed(&env, pending.new_rate_bps, env.ledger().timestamp());
         Ok(pending.new_rate_bps)
+    }
+
+    /// Set the hard upper bound on the withdrawal fee rate, in basis points
+    /// (0–10_000). Enforced both when a new rate is proposed
+    /// ([`Self::set_fee_rate`]) and when a pending change is applied
+    /// ([`Self::execute_fee_rate_change`]).
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::InvalidPrice`] — `cap_bps` is outside 0–10_000.
+    pub fn set_fee_cap(env: Env, admin: Address, cap_bps: i128) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        validation::validate_fee_rate_bps(cap_bps)?;
+        storage::set_fee_cap_bps(&env, cap_bps);
+        Ok(())
     }
 
     /// Return the currently pending fee rate change, if any (Issue #496).
@@ -1232,9 +1312,31 @@ impl MarketContract {
     ///
     /// When set, `resolve_market` will call into this contract to verify that
     /// a finalized candidate exists for the market before accepting a resolution.
-    /// Pass `None` (by omitting the storage entry) to remove the gate.
     ///
-    
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin.
+    pub fn set_resolution_contract(
+        env: Env,
+        admin: Address,
+        resolution_contract: Address,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_resolution_contract(&env, &resolution_contract);
+        Ok(())
+    }
+
+    /// Return the registered resolution contract address, if any.
+    pub fn get_resolution_contract(env: Env) -> Option<Address> {
+        storage::get_resolution_contract(&env)
+    }
+
     // ========== Trading Convenience Functions ==========
 
     /// Buy YES shares in a market at the specified price.

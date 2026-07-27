@@ -43,6 +43,13 @@ jobs:
       # To auto-fix locally before pushing, run: cd contracts/market && cargo fmt
       #
       # See contracts/market/rustfmt.toml for the option reference and planned rules.
+      # Cross-crate workspace compile check (#503): runs `cargo check` across
+      # every crate in the workspace (market, treasury, resolution,
+      # outcome-token) in one pass so a break in one crate can't slip through
+      # while another crate's individually-scoped steps stay green.
+      - name: Workspace compile check
+        run: cargo check --workspace --all-targets
+
       - name: Format check
         run: cd contracts/market && cargo fmt --check
 
@@ -224,6 +231,20 @@ jobs:
           test -f apps/web/lib/contracts/index.ts || (echo "ERROR: contracts/index.ts missing" && exit 1)
           echo "Bindings output:"
           ls -lh apps/web/lib/contracts/
+
+      # Fails the build if the bindings just generated above differ from what
+      # is committed in git. This catches drift where a contributor changed a
+      # contract's public interface (or the generator itself) without
+      # regenerating and committing the bindings under apps/web/lib/contracts/.
+      - name: Fail on stale committed bindings
+        run: |
+          if ! git diff --exit-code -- apps/web/lib/contracts; then
+            echo ""
+            echo "ERROR: Generated TypeScript bindings differ from what is committed."
+            echo "Run 'pnpm build:bindings' locally and commit the resulting changes"
+            echo "under apps/web/lib/contracts/."
+            exit 1
+          fi
 
       - name: Lint web app
         run: pnpm --filter web lint

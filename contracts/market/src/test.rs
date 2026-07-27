@@ -1695,4 +1695,203 @@ mod test {
             "position_updated_event missing after withdraw_canceled_collateral"
         );
     }
+
+    // ========== Pause blocks deposit and withdraw entrypoints ==========
+
+    #[test]
+    fn test_pause_blocks_deposit_collateral() {
+        use crate::error::ContractError;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let (env, admin, user, client, _contract_id, market_id, collateral_token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        StellarAssetClient::new(&env, &collateral_token).mint(&user, &500);
+        let result = client.try_deposit_collateral(&user, &market_id, &500);
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+    }
+
+    #[test]
+    fn test_pause_blocks_withdraw_unused_collateral() {
+        use crate::error::ContractError;
+
+        let (env, admin, user, client, _contract_id, market_id, _token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+
+        let result = client.try_withdraw_unused_collateral(&user, &market_id, &100);
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+    }
+
+    #[test]
+    fn test_unpause_restores_deposit_and_withdraw() {
+        use soroban_sdk::token::StellarAssetClient;
+
+        let (env, admin, user, client, _contract_id, market_id, collateral_token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        // Advance past the withdraw cooldown so the restored path can be exercised.
+        let now = env.ledger().timestamp();
+        env.ledger().set_timestamp(now + 3_601);
+        client.withdraw_unused_collateral(&user, &market_id, &1);
+
+        StellarAssetClient::new(&env, &collateral_token).mint(&user, &500);
+        client.deposit_collateral(&user, &market_id, &500);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_pause_or_unpause() {
+        use crate::error::ContractError;
+
+        let (env, _admin, _user, client, _contract_id, _market_id, _token) =
+            setup_admin_market_with_deposit(1_000);
+        let stranger = Address::generate(&env);
+
+        assert_eq!(client.try_pause(&stranger), Err(Ok(ContractError::NotAdmin)));
+        assert_eq!(client.try_unpause(&stranger), Err(Ok(ContractError::NotAdmin)));
+    }
+
+    // ========== Admin auth audit: missing/insufficiently-checked mutators ==========
+
+    #[test]
+    fn test_non_admin_cannot_call_admin_mutators() {
+        use crate::error::ContractError;
+        use crate::types::AdapterType;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let stranger = Address::generate(&env);
+
+        let question = String::from_str(&env, "Stranger cannot admin?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let oracle_pubkey = BytesN::from_array(&env, &[7u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        assert_eq!(
+            client.try_cancel_market(&stranger, &market_id),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_adapter_enabled(&stranger, &AdapterType::Ed25519, &true),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_update_market_oracle(
+                &stranger,
+                &market_id,
+                &BytesN::from_array(&env, &[9u8; 32])
+            ),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_threshold_signers(&stranger, &soroban_sdk::Vec::new(&env), &1u32),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_add_fee_waiver(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_remove_fee_waiver(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_fee_rate(&stranger, &100i128),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_resolution_contract(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_fee_cap(&stranger, &100i128),
+            Err(Ok(ContractError::NotAdmin))
+        );
+    }
+
+    #[test]
+    fn test_set_resolution_contract_records_address() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let resolution_contract = Address::generate(&env);
+
+        client.set_resolution_contract(&admin, &resolution_contract);
+
+        assert_eq!(client.get_resolution_contract(), Some(resolution_contract));
+    }
+
+    // ========== Fee cap hardening: set-time and execute-time enforcement ==========
+
+    #[test]
+    fn test_set_fee_rate_rejects_over_cap() {
+        use crate::error::ContractError;
+
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &500i128);
+        let result = client.try_set_fee_rate(&admin, &501i128);
+        assert_eq!(result, Err(Ok(ContractError::FeeCapExceeded)));
+    }
+
+    #[test]
+    fn test_set_fee_rate_accepts_at_cap() {
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &500i128);
+        client.set_fee_rate(&admin, &500i128);
+
+        let pending = client
+            .get_pending_fee_rate_change()
+            .expect("pending change should exist");
+        assert_eq!(pending.new_rate_bps, 500);
+    }
+
+    #[test]
+    fn test_execute_fee_rate_change_rejects_when_cap_lowered_after_proposal() {
+        use crate::error::ContractError;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        // Propose a rate that is valid under the (default, permissive) cap.
+        client.set_fee_rate(&admin, &9_000i128);
+
+        // Admin tightens the cap below the pending rate before it takes effect.
+        client.set_fee_cap(&admin, &1_000i128);
+
+        // Advance past the timelock.
+        let now = env.ledger().timestamp();
+        env.ledger()
+            .set_timestamp(now + crate::FEE_RATE_TIMELOCK_SECONDS + 1);
+
+        let result = client.try_execute_fee_rate_change();
+        assert_eq!(result, Err(Ok(ContractError::FeeCapExceeded)));
+    }
+
+    #[test]
+    fn test_execute_fee_rate_change_accepts_at_cap() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &1_000i128);
+        client.set_fee_rate(&admin, &1_000i128);
+
+        let now = env.ledger().timestamp();
+        env.ledger()
+            .set_timestamp(now + crate::FEE_RATE_TIMELOCK_SECONDS + 1);
+
+        let applied = client.execute_fee_rate_change();
+        assert_eq!(applied, 1_000);
+    }
 }
