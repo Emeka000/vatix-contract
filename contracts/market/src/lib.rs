@@ -54,6 +54,9 @@
 //! | `FeeWaivers`                        | `Vec<Address>`  | Admin-managed fee-exempt address list (#483)       |
 //! | `MarketParticipants(u32)`           | `Vec<Address>`  | Every address that ever held a position (#495)     |
 //! | `PendingFeeRate`                    | `PendingFeeRateChange` | Timelocked fee rate change awaiting execution (#496) |
+//! | `Paused`                            | `bool`          | Emergency pause flag; blocks state-mutating calls  |
+//! | `AdapterEnabled(AdapterType)`       | `bool`          | Whether the Reflector/Pyth adapter is live (#488)  |
+//! | `DepositLock`                       | `bool`          | Reentrancy lock for `deposit_collateral` (#501)    |
 
 mod deposit;
 mod error;
