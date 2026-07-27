@@ -81,6 +81,7 @@ use crate::types::{AdapterType, Market, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use vatix_outcome_token_contract::{OutcomeTokenContractClient, types::TokenKind};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
+use vatix_resolution_contract::ResolutionContractClient;
 
 /// Delay, in seconds, an admin-proposed fee rate change must wait before it
 /// can be applied via `execute_fee_rate_change` (Issue #496). 48 hours gives
@@ -392,6 +393,15 @@ impl MarketContract {
         if market.status == MarketStatus::Resolved {
             return Err(ContractError::MarketAlreadyResolved);
         }
+
+        // Step 1.5: When a resolution contract is registered for this
+        // contract (see `set_resolution_contract`), resolve_market may only
+        // be reached once that contract has finalized a matching candidate
+        // — i.e. its challenge-window lifecycle has run to completion. This
+        // is what lets `ResolutionContract::finalize`'s callback into
+        // `resolve_market` succeed while any other direct caller (oracle key
+        // holder, admin, etc.) is rejected until finalize() has run.
+        require_resolution_finalized(&env, market_id, outcome, &signature)?;
 
         // Step 2: Verify outcome using the configured adapter for this market.
         oracle::verify_market_outcome(
@@ -1227,9 +1237,30 @@ impl MarketContract {
     ///
     /// When set, `resolve_market` will call into this contract to verify that
     /// a finalized candidate exists for the market before accepting a resolution.
-    /// Pass `None` (by omitting the storage entry) to remove the gate.
+    /// Only the stored admin may call this.
+    pub fn set_resolution_contract(
+        env: Env,
+        admin: Address,
+        resolution_contract: Address,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_resolution_contract(&env, &resolution_contract);
+        Ok(())
+    }
+
+    /// Return the registered resolution contract address, if any.
     ///
-    
+    /// When `None`, `resolve_market` behaves as before this gate was added —
+    /// any valid oracle signature resolves the market directly.
+    pub fn get_resolution_contract(env: Env) -> Option<Address> {
+        storage::get_resolution_contract(&env)
+    }
+
     // ========== Trading Convenience Functions ==========
 
     /// Buy YES shares in a market at the specified price.
@@ -1496,4 +1527,46 @@ impl MarketContract {
         }
         Ok(result)
     }
+}
+
+/// Enforce the resolution-contract gate for `resolve_market`.
+///
+/// If no resolution contract is registered (`storage::get_resolution_contract`
+/// returns `None`), this is a no-op and `resolve_market` behaves exactly as
+/// it did before the gate existed — a valid oracle signature is sufficient.
+///
+/// When a resolution contract *is* registered, `resolve_market` may only
+/// succeed once that contract has recorded a `Finalized` candidate for
+/// `market_id` whose `outcome` and `signature` match this call. In practice
+/// that means the only caller that can push a resolved market past this
+/// check is `ResolutionContract::finalize` itself (it flips the candidate to
+/// `Finalized` in its own storage, then immediately invokes
+/// `resolve_market` in the same transaction) — any other direct caller
+/// (oracle key holder, admin, etc.) is rejected with
+/// `ContractError::ResolutionNotFinalized` until finalize() has run.
+fn require_resolution_finalized(
+    env: &Env,
+    market_id: u32,
+    outcome: bool,
+    signature: &BytesN<64>,
+) -> Result<(), ContractError> {
+    let Some(resolution_contract) = storage::get_resolution_contract(env) else {
+        return Ok(());
+    };
+
+    let client = ResolutionContractClient::new(env, &resolution_contract);
+    let candidate_id = client
+        .get_candidate_id_for_market(&market_id)
+        .ok_or(ContractError::ResolutionNotFinalized)?;
+    let candidate = client
+        .get_candidate(&candidate_id)
+        .ok_or(ContractError::ResolutionNotFinalized)?;
+
+    if candidate.status != ResolutionCandidateStatus::Finalized
+        || candidate.outcome != outcome
+        || &candidate.signature != signature
+    {
+        return Err(ContractError::ResolutionNotFinalized);
+    }
+    Ok(())
 }
