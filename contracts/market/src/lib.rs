@@ -35,6 +35,7 @@
 //! | `update_market_oracle`             | admin                           |
 //! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
 //! | `pause` / `unpause`                | admin                           |
+//! | `set_resolution_contract`          | admin                           |
 //!
 //! ## Storage layout
 //!
@@ -1273,9 +1274,31 @@ impl MarketContract {
     ///
     /// When set, `resolve_market` will call into this contract to verify that
     /// a finalized candidate exists for the market before accepting a resolution.
-    /// Pass `None` (by omitting the storage entry) to remove the gate.
     ///
-    
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin.
+    pub fn set_resolution_contract(
+        env: Env,
+        admin: Address,
+        resolution_contract: Address,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_resolution_contract(&env, &resolution_contract);
+        Ok(())
+    }
+
+    /// Return the registered resolution contract address, if any.
+    pub fn get_resolution_contract(env: Env) -> Option<Address> {
+        storage::get_resolution_contract(&env)
+    }
+
     // ========== Trading Convenience Functions ==========
 
     /// Buy YES shares in a market at the specified price.

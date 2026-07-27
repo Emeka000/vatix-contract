@@ -1758,4 +1758,74 @@ mod test {
         assert_eq!(client.try_pause(&stranger), Err(Ok(ContractError::NotAdmin)));
         assert_eq!(client.try_unpause(&stranger), Err(Ok(ContractError::NotAdmin)));
     }
+
+    // ========== Admin auth audit: missing/insufficiently-checked mutators ==========
+
+    #[test]
+    fn test_non_admin_cannot_call_admin_mutators() {
+        use crate::error::ContractError;
+        use crate::types::AdapterType;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let stranger = Address::generate(&env);
+
+        let question = String::from_str(&env, "Stranger cannot admin?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let oracle_pubkey = BytesN::from_array(&env, &[7u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        assert_eq!(
+            client.try_cancel_market(&stranger, &market_id),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_adapter_enabled(&stranger, &AdapterType::Ed25519, &true),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_update_market_oracle(
+                &stranger,
+                &market_id,
+                &BytesN::from_array(&env, &[9u8; 32])
+            ),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_threshold_signers(&stranger, &soroban_sdk::Vec::new(&env), &1u32),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_add_fee_waiver(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_remove_fee_waiver(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_fee_rate(&stranger, &100i128),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_resolution_contract(&stranger, &stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+    }
+
+    #[test]
+    fn test_set_resolution_contract_records_address() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let resolution_contract = Address::generate(&env);
+
+        client.set_resolution_contract(&admin, &resolution_contract);
+
+        assert_eq!(client.get_resolution_contract(), Some(resolution_contract));
+    }
 }
