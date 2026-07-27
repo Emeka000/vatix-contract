@@ -982,4 +982,90 @@ mod tests {
         });
         assert_eq!(second, Ok(0));
     }
+
+    // --- Settlement guard hardening: reject non-Resolved markets ---
+    //
+    // `settle_position`, `batch_settle_positions`, and `settle_positions_page`
+    // must all refuse to pay out unless MarketStatus::Resolved. Beyond the
+    // existing Active-market coverage above, these cover the Canceled case
+    // explicitly (there is no separate "Closed" status in this protocol —
+    // Active and Canceled are the only non-Resolved states) plus the
+    // previously-untested paginated settlement path.
+
+    #[test]
+    fn test_validate_settlement_rejects_canceled_market() {
+        let env = Env::default();
+        let market = create_test_market(&env, MarketStatus::Canceled, None);
+        let pos = create_test_position(&env, 100, 0, false);
+
+        let result = validate_settlement_eligibility(&pos, &market);
+        assert_eq!(result, Err(ContractError::MarketNotResolved));
+    }
+
+    #[test]
+    fn test_batch_settle_rejects_canceled_market() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, MarketStatus::Canceled, None);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market.id, &market).unwrap();
+        });
+
+        let users: Vec<Address> = Vec::new(&env);
+        let result = env.as_contract(&contract_id, || {
+            batch_settle_positions(&env, market.id, users)
+        });
+        assert_eq!(result, Err(ContractError::MarketNotResolved));
+    }
+
+    #[test]
+    fn test_settle_positions_page_rejects_active_market() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, MarketStatus::Active, None);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market.id, &market).unwrap();
+        });
+
+        let result = env.as_contract(&contract_id, || {
+            settle_positions_page(&env, market.id, 0, 10)
+        });
+        assert_eq!(result, Err(ContractError::MarketNotResolved));
+    }
+
+    #[test]
+    fn test_settle_positions_page_rejects_canceled_market() {
+        let env = Env::default();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, MarketStatus::Canceled, None);
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market.id, &market).unwrap();
+        });
+
+        let result = env.as_contract(&contract_id, || {
+            settle_positions_page(&env, market.id, 0, 10)
+        });
+        assert_eq!(result, Err(ContractError::MarketNotResolved));
+    }
+
+    #[test]
+    fn test_settle_positions_page_pays_out_resolved_market() {
+        let (env, contract_id, market_id, collateral_token) = setup_resolved_market();
+
+        // Fund the contract so the page-settle payout transfer succeeds.
+        soroban_sdk::token::StellarAssetClient::new(&env, &collateral_token)
+            .mint(&contract_id, &(1_000_000_000i128));
+
+        let (total_payout, next_index, is_complete) = env.as_contract(&contract_id, || {
+            settle_positions_page(&env, market_id, 0, 10)
+        })
+        .expect("resolved market should settle successfully");
+
+        assert!(total_payout > 0, "resolved market page-settle must pay out");
+        assert!(is_complete);
+        assert_eq!(next_index, 2); // two participants were set up by setup_resolved_market
+    }
 }
