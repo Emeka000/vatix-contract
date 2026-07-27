@@ -651,7 +651,12 @@ impl MarketContract {
     ///
     /// # Errors
     /// - [`ContractError::MarketNotFound`] – market does not exist
-    /// - [`ContractError::MarketNotActive`] – market is resolved or canceled
+    /// - [`ContractError::MarketNotActive`] – market is `Resolved` **or
+    ///   `Canceled`**. The check is `status != Active`, so a canceled market
+    ///   rejects every trade with this same error — there is no separate
+    ///   "canceled" trading error, by design, since the caller-facing action
+    ///   (no trades allowed) is identical for both non-Active states. See
+    ///   `tests/canceled_market_guard_test.rs` for coverage of this path.
     /// - [`ContractError::MarketExpired`] – current time exceeds market `end_time`
     /// - [`ContractError::InvalidPrice`] – `market_price` is outside valid range (0–10_000)
     /// - [`ContractError::InsufficientCollateral`] – deposited collateral insufficient
