@@ -537,6 +537,48 @@ mod test {
         });
     }
 
+    /// Lightweight CI guard: `STORAGE_MIGRATION_GUIDE.md` must document the
+    /// current `STORAGE_VERSION` with a `### Version {N} (Current)` heading,
+    /// and exactly one entry may be marked current.
+    ///
+    /// Storage version bump checklist (do this whenever `STORAGE_VERSION` in
+    /// this file is incremented):
+    /// 1. Add a new `### Version {N} (Current)` section to
+    ///    `STORAGE_MIGRATION_GUIDE.md`'s "Version History", describing what
+    ///    changed, the migration path, and whether it's breaking.
+    /// 2. Demote the previous `(Current)` entry to a plain `### Version {N}`
+    ///    heading (no `(Current)` suffix).
+    /// 3. Update the version history comment block above `STORAGE_VERSION`
+    ///    in this file to match.
+    /// 4. Re-run this test — bumping the constant without touching the guide
+    ///    fails the build here, before it fails in review.
+    #[test]
+    fn test_storage_version_documented_in_migration_guide() {
+        extern crate std;
+        use std::format;
+
+        const GUIDE: &str = include_str!("../STORAGE_MIGRATION_GUIDE.md");
+
+        let current_heading = format!("### Version {} (Current)", STORAGE_VERSION);
+        assert!(
+            GUIDE.contains(current_heading.as_str()),
+            "STORAGE_MIGRATION_GUIDE.md is missing a '{}' heading — document \
+             the breaking change and demote the previous (Current) entry \
+             whenever STORAGE_VERSION is bumped",
+            current_heading
+        );
+
+        // A stale duplicate "(Current)" marker left behind from a prior bump
+        // would otherwise let the check above pass without the guide
+        // actually being updated for the new version.
+        let current_count = GUIDE.matches("(Current)").count();
+        assert_eq!(
+            current_count, 1,
+            "exactly one Version History entry should be marked (Current); found {}",
+            current_count
+        );
+    }
+
     #[test]
     fn test_admin_storage() {
         let env = Env::default();
