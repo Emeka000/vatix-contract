@@ -673,6 +673,103 @@ mod tests {
         assert!(second.is_err());
     }
 
+    /// #settle-idempotency: a second `settle_position` call for the same user
+    /// must never transfer funds again. This asserts the *effect* (token
+    /// balances and stored position are byte-for-byte unchanged), not just
+    /// that the call errors — proving the second call is a true no-op/error
+    /// rather than an error that still leaked a partial payout.
+    #[test]
+    fn test_second_settle_position_cannot_double_pay() {
+        use crate::{MarketContract, MarketContractClient};
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+        const STROOPS_PER_USDC: i128 = 10_000_000;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(&env, &admin);
+            storage::set_version(&env);
+        });
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin);
+        let collateral_token = token.address();
+        let sac = StellarAssetClient::new(&env, &collateral_token);
+        let token_client = TokenClient::new(&env, &collateral_token);
+
+        let outcome = true;
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let oracle_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let question = String::from_str(&env, "Can settle drain funds twice?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        let user = Address::generate(&env);
+        let deposit = 100 * STROOPS_PER_USDC;
+        sac.mint(&user, &deposit);
+        client.deposit_collateral(&user, &market_id, &deposit);
+
+        let yes_shares = 100 * STROOPS_PER_USDC;
+        client.update_position(&user, &market_id, &yes_shares, &0i128, &5_000i128);
+
+        let message = crate::oracle::construct_oracle_message(&env, market_id, outcome);
+        let sig_bytes = signing_key.sign(message.to_array().as_slice()).to_bytes();
+        let signature = BytesN::from_array(&env, &sig_bytes);
+        client.resolve_market(&String::from_str(&env, "1"), &outcome, &signature);
+
+        // First settle succeeds and pays out exactly once.
+        let first_payout = client.settle_position(&user, &market_id);
+        assert_eq!(first_payout, yes_shares);
+
+        let user_balance_after_first = token_client.balance(&user);
+        let contract_balance_after_first = token_client.balance(&contract_id);
+        let position_after_first = env.as_contract(&contract_id, || {
+            storage::get_position(&env, market_id, &user).unwrap().expect("position should exist")
+        });
+        assert!(position_after_first.is_settled);
+
+        // Attempt to settle the same position multiple times more: every
+        // attempt must be rejected with PositionAlreadySettled and must not
+        // move any additional funds.
+        for _ in 0..3 {
+            let repeat = client.try_settle_position(&user, &market_id);
+            assert_eq!(repeat, Err(Ok(ContractError::PositionAlreadySettled)));
+
+            assert_eq!(
+                token_client.balance(&user),
+                user_balance_after_first,
+                "second settle must not pay the user again"
+            );
+            assert_eq!(
+                token_client.balance(&contract_id),
+                contract_balance_after_first,
+                "second settle must not drain the contract again"
+            );
+        }
+
+        // Stored position is unchanged by the rejected repeat attempts.
+        let position_after_repeats = env.as_contract(&contract_id, || {
+            storage::get_position(&env, market_id, &user).unwrap().expect("position should exist")
+        });
+        assert_eq!(position_after_repeats, position_after_first);
+    }
+
     #[test]
     fn test_settle_position_rejects_unresolved_market() {
         use crate::{MarketContract, MarketContractClient};
