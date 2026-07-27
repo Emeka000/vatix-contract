@@ -12,6 +12,7 @@
 //! | `MarketCreated`          | `market_created`                    |
 //! | `CollateralDeposited`    | `collateral_deposited`              |
 //! | `CollateralWithdrawn`    | `collateral_withdrawn`              |
+//! | `LargeWithdraw`          | `large_withdraw`                    |
 //! | `WithdrawEdgeCase`       | `withdraw_edge_case`                |
 //! | `MarketResolved`         | `market_resolved`                   |
 //! | `MarketCanceled`         | `market_canceled`                   |
@@ -130,6 +131,19 @@ pub struct CollateralWithdrawn {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct LargeWithdraw {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub market_id: u32,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct WithdrawEdgeCase {
     #[topic]
     pub version: u32,
@@ -204,6 +218,27 @@ pub fn emit_collateral_withdrawn(
         market_id,
         amount,
         new_total,
+    }
+    .publish(env);
+}
+
+/// Publishes a [`LargeWithdraw`] audit event when a withdrawal reaches the
+/// large-withdraw threshold (#502), so operators/indexers can flag unusual
+/// outflows without parsing every `CollateralWithdrawn` event.
+///
+/// # Arguments
+/// * env - Soroban environment
+/// * user - User's address
+/// * market_id - Market identifier
+/// * amount - Amount withdrawn in stroops
+/// * timestamp - Ledger timestamp of the withdrawal
+pub fn emit_large_withdraw(env: &Env, user: &Address, market_id: u32, amount: i128, timestamp: u64) {
+    LargeWithdraw {
+        version: EVENT_VERSION,
+        user: user.clone(),
+        market_id,
+        amount,
+        timestamp,
     }
     .publish(env);
 }

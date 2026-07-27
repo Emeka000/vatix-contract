@@ -185,6 +185,14 @@ cd ../outcome-token && cargo build
 cd ../resolution && cargo build
 ```
 
+### Workspace compile check
+
+CI runs `cargo check --workspace --all-targets` in one job (`.github/workflows/ci.yml`) so a break in any single crate (`contracts/market`, `contracts/treasury`, `contracts/resolution`, `contracts/outcome-token`) fails the build immediately, even if that crate isn't otherwise touched by the PR. Run it locally before pushing:
+
+```bash
+cargo check --workspace --all-targets
+```
+
 ### Contributor issues
 
 Generate **375** onboarding issues (125 per repo) — see [`scripts/issues/README.md`](scripts/issues/README.md).
@@ -416,7 +424,10 @@ Smart contract security is critical. All contracts will undergo:
 
 ## Contributing
 
-Contribution guidelines coming soon. For now, check out [vatix-docs](https://github.com/vatix-protocol/vatix-docs) for project information.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workspace layout, Soroban contract
+patterns, and the build/lint/test commands to run before opening a PR. For
+broader project information, check out
+[vatix-docs](https://github.com/vatix-protocol/vatix-docs).
 
 ## License
 

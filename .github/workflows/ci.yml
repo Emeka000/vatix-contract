@@ -43,6 +43,13 @@ jobs:
       # To auto-fix locally before pushing, run: cd contracts/market && cargo fmt
       #
       # See contracts/market/rustfmt.toml for the option reference and planned rules.
+      # Cross-crate workspace compile check (#503): runs `cargo check` across
+      # every crate in the workspace (market, treasury, resolution,
+      # outcome-token) in one pass so a break in one crate can't slip through
+      # while another crate's individually-scoped steps stay green.
+      - name: Workspace compile check
+        run: cargo check --workspace --all-targets
+
       - name: Format check
         run: cd contracts/market && cargo fmt --check
 

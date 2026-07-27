@@ -72,6 +72,8 @@ pub mod storage;
 mod test;
 #[cfg(test)]
 mod withdraw_fuzz;
+#[cfg(test)]
+mod tests_vectors;
 pub mod types;
 #[allow(dead_code)]
 mod validation;
