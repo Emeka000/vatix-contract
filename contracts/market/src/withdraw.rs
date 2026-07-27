@@ -11,9 +11,34 @@
 //! collateral available. The fee is routed to the treasury (if registered) and
 //! both the withdrawal and the fee are deducted from `total_deposited` so the
 //! invariant `available = total_deposited - locked_collateral` is preserved.
+//!
+//! ## Treasury-optional fee behavior (treasury-unset)
+//! The treasury address is an *optional* piece of admin configuration
+//! (`storage::set_treasury_contract` / `storage::get_treasury`). The chosen,
+//! documented behavior when it is unset is:
+//!
+//! - **Fees are never dropped.** `total_deposited` is always reduced by
+//!   `amount + fee_amount`, regardless of whether a treasury is registered.
+//!   The user always receives exactly `amount`.
+//! - **Skip transfer, don't revert.** When `fee_rate_bps > 0` but
+//!   `storage::get_treasury` returns `None`, the withdrawal still succeeds:
+//!   the fee portion simply remains in the market contract's own collateral
+//!   token balance instead of being forwarded anywhere. The withdrawal is
+//!   *not* reverted just because a treasury has not been configured yet.
+//! - **Explicit signal.** The `FeeRetainedNoTreasury` event
+//!   (see [`crate::events::emit_fee_retained_no_treasury`]) is emitted
+//!   whenever a non-zero fee is retained this way, so off-chain indexers and
+//!   admins can see the fee is sitting in the contract balance rather than
+//!   assuming it reached the treasury. Once a treasury is registered via
+//!   `set_treasury_contract`, subsequent withdrawals route the fee there and
+//!   `FeeRetainedNoTreasury` is no longer emitted for that market.
+//! - Both configurations (`treasury` set and unset) are covered by tests in
+//!   this module and in `tests/treasury_unset_fee_test.rs`.
 
 use crate::error::ContractError;
-use crate::events::{emit_collateral_withdrawn, emit_fee_calculated, emit_withdraw_edge_case};
+use crate::events::{
+    emit_collateral_withdrawn, emit_fee_calculated, emit_large_withdraw, emit_withdraw_edge_case,
+};
 use crate::storage;
 use crate::types::{MarketStatus, Position};
 use crate::validation;
@@ -23,6 +48,10 @@ use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 
 /// Seconds a user must wait after their last deposit before withdrawing (issue #413).
 const WITHDRAW_COOLDOWN_SECONDS: u64 = 3_600;
+
+/// Withdrawn amount (in stroops) at or above which a dedicated audit event is
+/// emitted so operators/indexers can flag unusual outflows (#502).
+pub const LARGE_WITHDRAW_THRESHOLD: i128 = 1_000_000_0000000;
 
 /// Withdraw `amount` of unused (unlocked) collateral from a market.
 ///
@@ -121,8 +150,14 @@ pub fn withdraw_unused_collateral(
                 &Symbol::new(&env, "collect_fee"),
                 args,
             );
+        } else {
+            // Treasury-optional path: skip the transfer, do NOT revert the
+            // withdrawal. The fee stays in the contract's own collateral
+            // token balance (it is already subtracted from `total_deposited`
+            // below), and we emit an explicit event so this is never a
+            // silent drop. See the module docs for the full rationale.
+            emit_fee_retained_no_treasury(&env, market_id, &user, fee_amount);
         }
-        // When no treasury is registered the fee stays in the contract.
     }
 
     // 8. Deduct both withdrawal and fee from total_deposited.
@@ -140,6 +175,13 @@ pub fn withdraw_unused_collateral(
     token_client.transfer(&contract_address, &user, &amount);
 
     emit_collateral_withdrawn(&env, &user, market_id, amount, position.total_deposited);
+
+    // Audit log for large withdraws (#502): flagged independently of the fee
+    // path so operators/indexers can spot unusual outflows without parsing
+    // every CollateralWithdrawn event.
+    if amount >= LARGE_WITHDRAW_THRESHOLD {
+        emit_large_withdraw(&env, &user, market_id, amount, env.ledger().timestamp());
+    }
 
     Ok(())
 }
@@ -462,6 +504,128 @@ mod tests {
         assert_eq!(updated.total_deposited, 60); // 100 - 40, no fee
     }
 
+    /// Treasury-unset: fee is retained in the contract balance, user still
+    /// receives exactly `amount`, and `FeeRetainedNoTreasury` is emitted.
+    #[test]
+    fn test_withdraw_fee_retained_when_treasury_unset() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::IntoVal;
+
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let position = Position {
+            market_id,
+            user: user.clone(),
+            yes_shares: 0,
+            no_shares: 0,
+            locked_collateral: 0,
+            total_deposited: 100,
+            is_settled: false,
+        };
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+            storage::set_fee_rate_bps(&env, 1_000); // 10%, no treasury registered
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &200);
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, 40)
+        });
+        assert!(result.is_ok());
+
+        // User receives exactly the requested amount.
+        assert_eq!(token_client.balance(&user), 40);
+        // Fee (4) stays inside the contract's own token balance.
+        assert_eq!(token_client.balance(&contract_id), 200 - 40 - 4 + 4);
+        assert_eq!(token_client.balance(&contract_id), 160);
+
+        // total_deposited still reflects both the withdrawal and the fee.
+        let updated = env.as_contract(&contract_id, || {
+            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+        });
+        assert_eq!(updated.total_deposited, 56); // 100 - 40 - 4
+
+        // The explicit "fee retained" event was emitted.
+        let events = env.events().all();
+        let has_retained_event = events.iter().any(|(_, topics, _)| {
+            let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            topic0 == soroban_sdk::Symbol::new(&env, "fee_retained_no_treasury")
+        });
+        assert!(
+            has_retained_event,
+            "expected FeeRetainedNoTreasury event when treasury is unset"
+        );
+    }
+
+    /// Treasury-set: fee is routed to the real treasury contract and the
+    /// `FeeRetainedNoTreasury` event must NOT fire.
+    #[test]
+    fn test_withdraw_fee_routed_when_treasury_set_no_retained_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::IntoVal;
+        use vatix_treasury_contract::{TreasuryContract, TreasuryContractClient};
+
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let position = Position {
+            market_id,
+            user: user.clone(),
+            yes_shares: 0,
+            no_shares: 0,
+            locked_collateral: 0,
+            total_deposited: 100,
+            is_settled: false,
+        };
+        let admin = Address::generate(&env);
+        let treasury_addr = env.register(TreasuryContract, ());
+        TreasuryContractClient::new(&env, &treasury_addr).initialize(&admin, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+            storage::set_fee_rate_bps(&env, 1_000); // 10%
+            storage::set_treasury(&env, &treasury_addr);
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &200);
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, 40)
+        });
+        assert!(result.is_ok());
+
+        assert_eq!(token_client.balance(&user), 40);
+        assert_eq!(token_client.balance(&treasury_addr), 4);
+
+        let events = env.events().all();
+        let has_retained_event = events.iter().any(|(_, topics, _)| {
+            let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&env);
+            topic0 == soroban_sdk::Symbol::new(&env, "fee_retained_no_treasury")
+        });
+        assert!(
+            !has_retained_event,
+            "FeeRetainedNoTreasury must not fire when a treasury is registered"
+        );
+    }
+
     #[test]
     fn test_withdraw_zero_deposited_rejected() {
         let env = setup_env();
@@ -486,5 +650,83 @@ mod tests {
             withdraw_unused_collateral(env.clone(), user.clone(), market_id, 1)
         });
         assert_eq!(result, Err(ContractError::InsufficientCollateral));
+    }
+
+    /// #502: withdrawals below the large-withdraw threshold must not emit the
+    /// audit event (only the regular CollateralWithdrawn event fires).
+    #[test]
+    fn test_withdraw_below_threshold_no_audit_event() {
+        use soroban_sdk::token::StellarAssetClient;
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let amount = LARGE_WITHDRAW_THRESHOLD - 1;
+        let position = Position {
+            market_id, user: user.clone(),
+            yes_shares: 0, no_shares: 0,
+            locked_collateral: 0, total_deposited: amount, is_settled: false,
+        };
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &amount);
+        env.events().all(); // clear setup events
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, amount)
+        });
+        assert!(result.is_ok());
+        let events = env.events().all();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.topics.iter().any(|t| t.to_string().contains("large_withdraw"))),
+            "LargeWithdraw audit event should not be emitted below threshold"
+        );
+    }
+
+    /// #502: withdrawals at/above the large-withdraw threshold must emit the
+    /// dedicated audit event alongside the regular withdraw event.
+    #[test]
+    fn test_withdraw_above_threshold_emits_audit_event() {
+        use soroban_sdk::token::StellarAssetClient;
+        let env = setup_env();
+        let user = Address::generate(&env);
+        let market_id = 1u32;
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let contract_id = env.register(crate::MarketContract, ());
+        let market = create_test_market(&env, market_id, &token);
+        let amount = LARGE_WITHDRAW_THRESHOLD;
+        let position = Position {
+            market_id, user: user.clone(),
+            yes_shares: 0, no_shares: 0,
+            locked_collateral: 0, total_deposited: amount, is_settled: false,
+        };
+        env.as_contract(&contract_id, || {
+            storage::set_version(&env);
+            storage::set_market(&env, market_id, &market).unwrap();
+            storage::set_position(&env, market_id, &user, &position).unwrap();
+        });
+        env.mock_all_auths();
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &amount);
+        env.events().all(); // clear setup events
+        let result = env.as_contract(&contract_id, || {
+            withdraw_unused_collateral(env.clone(), user.clone(), market_id, amount)
+        });
+        assert!(result.is_ok());
+        let events = env.events().all();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.topics.iter().any(|t| t.to_string().contains("large_withdraw"))),
+            "LargeWithdraw audit event should be emitted at/above threshold"
+        );
     }
 }

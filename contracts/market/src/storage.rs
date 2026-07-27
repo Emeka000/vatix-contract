@@ -472,6 +472,11 @@ pub fn get_fee_cap_bps(env: &Env) -> i128 {
         .unwrap_or(MAX_FEE_RATE_BPS)
 }
 
+/// Set the hard upper bound on the fee rate (admin-gated in `lib.rs`).
+pub fn set_fee_cap_bps(env: &Env, cap_bps: i128) {
+    env.storage().persistent().set(&StorageKey::FeeCap, &cap_bps);
+}
+
 /// Alias for `get_all_market_ids` used by `list_markets`.
 pub fn get_market_ids(env: &Env) -> Vec<u32> {
     get_all_market_ids(env)

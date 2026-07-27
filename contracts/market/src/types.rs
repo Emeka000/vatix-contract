@@ -71,6 +71,25 @@ pub struct Market {
 /// quantities that can legitimately grow very large, so narrowing them would
 /// risk overflow. Only the naturally-bounded `market_id` (`u32`) and
 /// `is_settled` (`bool`) fields are narrow.
+///
+/// # Invariant: `locked_collateral <= total_deposited`
+///
+/// This must hold after every successful `deposit_collateral`,
+/// `update_position`, and `withdraw_unused_collateral` call. It is enforced
+/// by refusing state transitions that would violate it, never by clamping:
+/// - `MarketContract::update_position` (`lib.rs`) rejects any trade whose
+///   recalculated lock would exceed `total_deposited` with
+///   `ContractError::InsufficientCollateral`, *before* calling
+///   `positions::update_position` to persist anything.
+/// - `withdraw_unused_collateral` (`withdraw.rs`) only allows withdrawing up
+///   to `total_deposited - locked_collateral`, so a withdrawal can never
+///   itself push the balance below the lock.
+///
+/// See `tests/locked_le_deposited_invariant_test.rs`,
+/// `tests/collateral_invariant_test.rs` and
+/// `tests/proptest_locked_invariant.rs` for the invariant tests, including
+/// the documented rejection ("failure") case where an over-leveraged trade
+/// is refused and the position is left unchanged.
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct Position {

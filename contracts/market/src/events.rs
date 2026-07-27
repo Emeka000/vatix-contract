@@ -12,6 +12,7 @@
 //! | `MarketCreated`          | `market_created`                    |
 //! | `CollateralDeposited`    | `collateral_deposited`              |
 //! | `CollateralWithdrawn`    | `collateral_withdrawn`              |
+//! | `LargeWithdraw`          | `large_withdraw`                    |
 //! | `WithdrawEdgeCase`       | `withdraw_edge_case`                |
 //! | `MarketResolved`         | `market_resolved`                   |
 //! | `MarketCanceled`         | `market_canceled`                   |
@@ -130,6 +131,19 @@ pub struct CollateralWithdrawn {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct LargeWithdraw {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub market_id: u32,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct WithdrawEdgeCase {
     #[topic]
     pub version: u32,
@@ -204,6 +218,27 @@ pub fn emit_collateral_withdrawn(
         market_id,
         amount,
         new_total,
+    }
+    .publish(env);
+}
+
+/// Publishes a [`LargeWithdraw`] audit event when a withdrawal reaches the
+/// large-withdraw threshold (#502), so operators/indexers can flag unusual
+/// outflows without parsing every `CollateralWithdrawn` event.
+///
+/// # Arguments
+/// * env - Soroban environment
+/// * user - User's address
+/// * market_id - Market identifier
+/// * amount - Amount withdrawn in stroops
+/// * timestamp - Ledger timestamp of the withdrawal
+pub fn emit_large_withdraw(env: &Env, user: &Address, market_id: u32, amount: i128, timestamp: u64) {
+    LargeWithdraw {
+        version: EVENT_VERSION,
+        user: user.clone(),
+        market_id,
+        amount,
+        timestamp,
     }
     .publish(env);
 }
@@ -742,6 +777,40 @@ pub fn emit_fee_calculated(
         user: user.clone(),
         fee_amount,
         available_after_fee,
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FeeRetainedNoTreasury {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub user: Address,
+    pub fee_amount: i128,
+}
+
+/// Emit event when a non-zero withdrawal fee is retained in the market
+/// contract's own balance because no treasury address is registered (#treasury-optional).
+///
+/// This makes the "treasury unset" code path observable on-chain: the fee is
+/// never dropped or burned, it simply stays in the contract's collateral
+/// token balance until an admin registers a treasury and/or sweeps it later.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `market_id` - Market identifier
+/// * `user` - Address of the user whose withdrawal generated the fee
+/// * `fee_amount` - Fee amount retained in the contract, in stroops
+pub fn emit_fee_retained_no_treasury(env: &Env, market_id: u32, user: &Address, fee_amount: i128) {
+    FeeRetainedNoTreasury {
+        version: EVENT_VERSION,
+        market_id,
+        user: user.clone(),
+        fee_amount,
     }
     .publish(env);
 }
