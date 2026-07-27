@@ -701,7 +701,12 @@ impl MarketContract {
     ///
     /// # Errors
     /// - [`ContractError::MarketNotFound`] – market does not exist
-    /// - [`ContractError::MarketNotActive`] – market is resolved or canceled
+    /// - [`ContractError::MarketNotActive`] – market is `Resolved` **or
+    ///   `Canceled`**. The check is `status != Active`, so a canceled market
+    ///   rejects every trade with this same error — there is no separate
+    ///   "canceled" trading error, by design, since the caller-facing action
+    ///   (no trades allowed) is identical for both non-Active states. See
+    ///   `tests/canceled_market_guard_test.rs` for coverage of this path.
     /// - [`ContractError::MarketExpired`] – current time exceeds market `end_time`
     /// - [`ContractError::InvalidPrice`] – `market_price` is outside valid range (0–10_000)
     /// - [`ContractError::InsufficientCollateral`] – deposited collateral insufficient
@@ -1519,13 +1524,23 @@ impl MarketContract {
     /// * `user` - User address to query
     ///
     /// # Returns
-    /// The user's [`Position`] if it exists, `None` otherwise.
+    /// `Some(Position)` if the user has ever traded or deposited in this
+    /// market, `None` if the market exists but the user has no position yet.
+    ///
+    /// # Errors
+    /// - [`ContractError::MarketNotFound`] – `market_id` does not correspond
+    ///   to any market. This is checked explicitly so that querying a typo'd
+    ///   or never-created `market_id` fails clearly instead of being
+    ///   indistinguishable from "market exists, user has no position" (both
+    ///   would otherwise return `Ok(None)`).
     ///
     /// # Example
     /// ```ignore
-    /// if let Some(position) = client.get_position(&market_id, &user) {
-    ///     println!("YES shares: {}", position.yes_shares);
-    ///     println!("Locked collateral: {}", position.locked_collateral);
+    /// match client.try_get_position(&market_id, &user) {
+    ///     Ok(Ok(Some(position))) => { /* has a position */ }
+    ///     Ok(Ok(None)) => { /* market exists, no position yet */ }
+    ///     Ok(Err(ContractError::MarketNotFound)) => { /* bad market_id */ }
+    ///     _ => {}
     /// }
     /// ```
     pub fn get_position(
@@ -1533,6 +1548,9 @@ impl MarketContract {
         market_id: u32,
         user: Address,
     ) -> Result<Option<Position>, ContractError> {
+        if !storage::has_market(&env, market_id)? {
+            return Err(ContractError::MarketNotFound);
+        }
         storage::get_position(&env, market_id, &user)
     }
 
@@ -1546,6 +1564,10 @@ impl MarketContract {
     /// * `market_id` - Market identifier
     /// * `user` - User address to query
     ///
+    /// # Errors
+    /// - [`ContractError::MarketNotFound`] – `market_id` does not correspond
+    ///   to any market (see [`Self::get_position`] for the rationale).
+    ///
     /// # Example
     /// ```ignore
     /// let net = client.get_net_position(&market_id, &user);
@@ -1557,6 +1579,9 @@ impl MarketContract {
         market_id: u32,
         user: Address,
     ) -> Result<i128, ContractError> {
+        if !storage::has_market(&env, market_id)? {
+            return Err(ContractError::MarketNotFound);
+        }
         let position = storage::get_position(&env, market_id, &user)?;
         Ok(match position {
             Some(p) => positions::calculate_net_position(p.yes_shares, p.no_shares),
