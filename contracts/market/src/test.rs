@@ -1695,4 +1695,67 @@ mod test {
             "position_updated_event missing after withdraw_canceled_collateral"
         );
     }
+
+    // ========== Pause blocks deposit and withdraw entrypoints ==========
+
+    #[test]
+    fn test_pause_blocks_deposit_collateral() {
+        use crate::error::ContractError;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let (env, admin, user, client, _contract_id, market_id, collateral_token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        StellarAssetClient::new(&env, &collateral_token).mint(&user, &500);
+        let result = client.try_deposit_collateral(&user, &market_id, &500);
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+    }
+
+    #[test]
+    fn test_pause_blocks_withdraw_unused_collateral() {
+        use crate::error::ContractError;
+
+        let (env, admin, user, client, _contract_id, market_id, _token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+
+        let result = client.try_withdraw_unused_collateral(&user, &market_id, &100);
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+    }
+
+    #[test]
+    fn test_unpause_restores_deposit_and_withdraw() {
+        use soroban_sdk::token::StellarAssetClient;
+
+        let (env, admin, user, client, _contract_id, market_id, collateral_token) =
+            setup_admin_market_with_deposit(1_000);
+
+        client.pause(&admin);
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        // Advance past the withdraw cooldown so the restored path can be exercised.
+        let now = env.ledger().timestamp();
+        env.ledger().set_timestamp(now + 3_601);
+        client.withdraw_unused_collateral(&user, &market_id, &1);
+
+        StellarAssetClient::new(&env, &collateral_token).mint(&user, &500);
+        client.deposit_collateral(&user, &market_id, &500);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_pause_or_unpause() {
+        use crate::error::ContractError;
+
+        let (env, _admin, _user, client, _contract_id, _market_id, _token) =
+            setup_admin_market_with_deposit(1_000);
+        let stranger = Address::generate(&env);
+
+        assert_eq!(client.try_pause(&stranger), Err(Ok(ContractError::NotAdmin)));
+        assert_eq!(client.try_unpause(&stranger), Err(Ok(ContractError::NotAdmin)));
+    }
 }

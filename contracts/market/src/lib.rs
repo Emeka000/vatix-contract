@@ -34,6 +34,7 @@
 //! | `settle_position` / `batch_settle` | any user (resolved market)      |
 //! | `update_market_oracle`             | admin                           |
 //! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
+//! | `pause` / `unpause`                | admin                           |
 //!
 //! ## Storage layout
 //!
@@ -491,6 +492,51 @@ impl MarketContract {
     /// Return whether the given oracle adapter type is currently enabled (#488).
     pub fn is_adapter_enabled(env: Env, adapter_type: AdapterType) -> bool {
         storage::is_adapter_enabled(&env, &adapter_type)
+    }
+
+    /// Pause the contract for emergency maintenance.
+    ///
+    /// While paused, `deposit_collateral`, `withdraw_unused_collateral`,
+    /// `update_position`, `initialize_market`, `cancel_market`,
+    /// `resolve_market`, and `resolve_market_threshold` all reject with
+    /// [`ContractError::ContractPaused`] via [`validation::require_not_paused`].
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_paused(&env, true);
+        events::emit_emergency_pause_toggled(&env, true);
+        Ok(())
+    }
+
+    /// Unpause the contract, restoring normal operation.
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_paused(&env, false);
+        events::emit_emergency_pause_toggled(&env, false);
+        Ok(())
+    }
+
+    /// Return whether the contract is currently paused for emergency maintenance.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
     }
 
     /// Cancel a market before it is resolved, halting all further trading.
