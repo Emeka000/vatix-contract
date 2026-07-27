@@ -21,8 +21,15 @@
 The Vatix Market Contract uses a storage versioning mechanism to ensure data integrity across contract upgrades. The `STORAGE_VERSION` constant in `src/storage.rs` acts as a compatibility lock:
 
 ```rust
-pub const STORAGE_VERSION: u32 = 3;
+pub const STORAGE_VERSION: u32 = 4;
 ```
+
+> **CI check:** `contracts/market/src/storage.rs` contains a test
+> (`test_storage_version_documented_in_migration_guide`) that fails if
+> `STORAGE_VERSION` doesn't have a matching `### Version {N}` heading in the
+> [Version History](#version-history) section below. Bumping the constant
+> without touching this file breaks the build — see that test's doc comment
+> for the checklist.
 
 Every storage operation calls `assert_version()` to verify the on-chain version matches the code version. Mismatches return `ContractError::UpgradeRequired`, preventing operations on incompatible data.
 
@@ -591,7 +598,20 @@ pub fn new_storage_function(env: &Env) {
 
 ## Version History
 
-### Version 3 (Current)
+### Version 4 (Current)
+
+**Date:** 2025-Q1
+**Changes:**
+- Added per-adapter-type `AdapterEnabled` flag (`StorageKey::AdapterEnabled`)
+  gating the Reflector/Pyth → Ed25519 fallback path in `verify_market_outcome` (#488)
+
+**Migration:** Fresh deployment required. No data migration available.
+
+**Breaking Changes:** None (additive only) — new `StorageKey` variant.
+
+---
+
+### Version 3
 
 **Date:** 2024-Q4
 **Changes:**
