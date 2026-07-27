@@ -1,6 +1,9 @@
 use crate::types::TokenKind;
 use crate::{ContractError, OutcomeTokenContract, OutcomeTokenContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    Address, Env, IntoVal, String,
+};
 
 fn setup(env: &Env) -> (OutcomeTokenContractClient<'_>, Address, Address) {
     env.mock_all_auths();
@@ -184,6 +187,128 @@ fn burn_full_balance_brings_to_zero() {
 
     assert_eq!(client.balance(&2, &user, &TokenKind::Yes), 0);
     assert_eq!(client.total_supply(&2, &TokenKind::Yes), 0);
+}
+
+// ── mint/burn authorization ─────────────────────────────────────────────────
+//
+// The tests above all run under `setup()`'s `env.mock_all_auths()`, which
+// makes every `require_auth()` call succeed unconditionally — so they never
+// actually exercise the `config.market_contract.require_auth()` gate inside
+// `mint`/`burn`. The tests below build their own environment without blanket
+// auth mocking so that gate is genuinely exercised: `mint`/`burn` must
+// succeed when (and only when) the call carries a valid authorization for
+// the registered market contract.
+
+fn setup_unmocked(env: &Env) -> (OutcomeTokenContractClient<'_>, Address, Address, Address) {
+    let contract_id = env.register(OutcomeTokenContract, ());
+    let client = OutcomeTokenContractClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let market_contract = Address::generate(env);
+    let name = String::from_str(env, "Vatix YES Token");
+    let symbol = String::from_str(env, "vYES");
+
+    // `initialize` only needs the admin's own auth, mocked for this one call.
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (&admin, &market_contract, &name, &symbol).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(&admin, &market_contract, &name, &symbol);
+
+    (client, admin, market_contract, contract_id)
+}
+
+#[test]
+fn mint_succeeds_when_authorized_by_market_contract() {
+    let env = Env::default();
+    let (client, _admin, market_contract, contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &market_contract,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "mint",
+            args: (&1u32, &user, &TokenKind::Yes, &500i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 500);
+}
+
+#[test]
+#[should_panic]
+fn mint_fails_without_market_contract_authorization() {
+    // No auths are mocked at all here (unlike every other test in this file),
+    // so `config.market_contract.require_auth()` inside `mint` has nothing to
+    // satisfy it with — this is what stops an external EOA (or any caller
+    // other than the registered market contract) from minting tokens.
+    let env = Env::default();
+    let (client, _admin, _market_contract, _contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+}
+
+#[test]
+fn burn_succeeds_when_authorized_by_market_contract() {
+    let env = Env::default();
+    let (client, _admin, market_contract, contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &market_contract,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "mint",
+            args: (&1u32, &user, &TokenKind::Yes, &500i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+
+    env.mock_auths(&[MockAuth {
+        address: &market_contract,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "burn",
+            args: (&1u32, &user, &TokenKind::Yes, &200i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.burn(&1, &user, &TokenKind::Yes, &200);
+
+    assert_eq!(client.balance(&1, &user, &TokenKind::Yes), 300);
+}
+
+#[test]
+#[should_panic]
+fn burn_fails_without_market_contract_authorization() {
+    let env = Env::default();
+    let (client, _admin, market_contract, contract_id) = setup_unmocked(&env);
+    let user = Address::generate(&env);
+
+    // Fund the user first (this one mint call is authorized) so the burn
+    // attempt below fails on the auth gate itself, not InsufficientBalance.
+    env.mock_auths(&[MockAuth {
+        address: &market_contract,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "mint",
+            args: (&1u32, &user, &TokenKind::Yes, &500i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.mint(&1, &user, &TokenKind::Yes, &500);
+
+    // No mocked auth for this call — an unauthorized burn must panic.
+    client.burn(&1, &user, &TokenKind::Yes, &200);
 }
 
 // ── market isolation ────────────────────────────────────────────────────────
