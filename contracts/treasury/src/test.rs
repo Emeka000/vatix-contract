@@ -424,6 +424,40 @@ fn removed_market_cannot_collect_fee() {
 }
 
 #[test]
+fn re_added_market_can_collect_fee_again() {
+    // Round-trip: a market removed from the registry and later re-added must
+    // regain collect_fee access exactly like any other authorized market —
+    // removal must not leave stale state that blocks re-registration.
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    s.client.add_market(&s.admin, &market2);
+    s.client.remove_market(&s.admin, &market2);
+    assert!(!s.client.is_authorized_market(&market2));
+
+    s.client.add_market(&s.admin, &market2);
+    assert!(s.client.is_authorized_market(&market2));
+
+    s.client.collect_fee(&market2, &s.token, &7u32, &42_000i128);
+    assert_eq!(s.client.token_balance(&s.token), 42_000i128);
+}
+
+#[test]
+fn collect_fee_rejects_caller_never_registered() {
+    // A caller that was never part of the authorized-markets registry (as
+    // opposed to one that was registered and later removed) must be
+    // rejected the same way, via the same error.
+    let s = setup();
+    let never_registered = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_collect_fee(&never_registered, &s.token, &1u32, &10i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, TreasuryError::CallerNotMarket);
+    assert_eq!(s.client.token_balance(&s.token), 0);
+}
+
+#[test]
 fn multiple_markets_can_each_collect_fees() {
     let s = setup();
     let market2 = Address::generate(&s.env);
