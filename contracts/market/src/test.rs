@@ -1817,6 +1817,10 @@ mod test {
             client.try_set_resolution_contract(&stranger, &stranger),
             Err(Ok(ContractError::NotAdmin))
         );
+        assert_eq!(
+            client.try_set_fee_cap(&stranger, &100i128),
+            Err(Ok(ContractError::NotAdmin))
+        );
     }
 
     #[test]
@@ -1827,5 +1831,67 @@ mod test {
         client.set_resolution_contract(&admin, &resolution_contract);
 
         assert_eq!(client.get_resolution_contract(), Some(resolution_contract));
+    }
+
+    // ========== Fee cap hardening: set-time and execute-time enforcement ==========
+
+    #[test]
+    fn test_set_fee_rate_rejects_over_cap() {
+        use crate::error::ContractError;
+
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &500i128);
+        let result = client.try_set_fee_rate(&admin, &501i128);
+        assert_eq!(result, Err(Ok(ContractError::FeeCapExceeded)));
+    }
+
+    #[test]
+    fn test_set_fee_rate_accepts_at_cap() {
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &500i128);
+        client.set_fee_rate(&admin, &500i128);
+
+        let pending = client
+            .get_pending_fee_rate_change()
+            .expect("pending change should exist");
+        assert_eq!(pending.new_rate_bps, 500);
+    }
+
+    #[test]
+    fn test_execute_fee_rate_change_rejects_when_cap_lowered_after_proposal() {
+        use crate::error::ContractError;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        // Propose a rate that is valid under the (default, permissive) cap.
+        client.set_fee_rate(&admin, &9_000i128);
+
+        // Admin tightens the cap below the pending rate before it takes effect.
+        client.set_fee_cap(&admin, &1_000i128);
+
+        // Advance past the timelock.
+        let now = env.ledger().timestamp();
+        env.ledger()
+            .set_timestamp(now + crate::FEE_RATE_TIMELOCK_SECONDS + 1);
+
+        let result = client.try_execute_fee_rate_change();
+        assert_eq!(result, Err(Ok(ContractError::FeeCapExceeded)));
+    }
+
+    #[test]
+    fn test_execute_fee_rate_change_accepts_at_cap() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        client.set_fee_cap(&admin, &1_000i128);
+        client.set_fee_rate(&admin, &1_000i128);
+
+        let now = env.ledger().timestamp();
+        env.ledger()
+            .set_timestamp(now + crate::FEE_RATE_TIMELOCK_SECONDS + 1);
+
+        let applied = client.execute_fee_rate_change();
+        assert_eq!(applied, 1_000);
     }
 }

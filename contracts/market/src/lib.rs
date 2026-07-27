@@ -36,6 +36,7 @@
 //! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
 //! | `pause` / `unpause`                | admin                           |
 //! | `set_resolution_contract`          | admin                           |
+//! | `set_fee_cap`                      | admin                           |
 //!
 //! ## Storage layout
 //!
@@ -979,16 +980,46 @@ impl MarketContract {
     /// # Errors
     /// - [`ContractError::NoPendingFeeChange`] — no change is currently pending.
     /// - [`ContractError::TimelockNotElapsed`] — `effective_at` has not passed yet.
+    /// - [`ContractError::FeeCapExceeded`] — the pending rate exceeds the
+    ///   *current* fee cap. The cap is re-checked here (not just at proposal
+    ///   time in [`Self::set_fee_rate`]) so a cap lowered by the admin while a
+    ///   change is in flight cannot let a stale, now-excessive rate through.
     pub fn execute_fee_rate_change(env: Env) -> Result<i128, ContractError> {
         let pending = storage::get_pending_fee_rate_change(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::TimelockNotElapsed);
         }
+        let cap = storage::get_fee_cap_bps(&env);
+        if pending.new_rate_bps > cap {
+            return Err(ContractError::FeeCapExceeded);
+        }
         storage::set_fee_rate_bps(&env, pending.new_rate_bps);
         storage::clear_pending_fee_rate_change(&env);
         events::emit_fee_rate_change_executed(&env, pending.new_rate_bps, env.ledger().timestamp());
         Ok(pending.new_rate_bps)
+    }
+
+    /// Set the hard upper bound on the withdrawal fee rate, in basis points
+    /// (0–10_000). Enforced both when a new rate is proposed
+    /// ([`Self::set_fee_rate`]) and when a pending change is applied
+    /// ([`Self::execute_fee_rate_change`]).
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::InvalidPrice`] — `cap_bps` is outside 0–10_000.
+    pub fn set_fee_cap(env: Env, admin: Address, cap_bps: i128) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        validation::validate_fee_rate_bps(cap_bps)?;
+        storage::set_fee_cap_bps(&env, cap_bps);
+        Ok(())
     }
 
     /// Return the currently pending fee rate change, if any (Issue #496).

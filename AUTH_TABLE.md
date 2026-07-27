@@ -30,10 +30,11 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | `set_resolution_contract`       | ✅ | ✅ | **Was missing entirely** — storage helpers and tests existed but no contract entrypoint called them; added by this pass. |
 | `add_fee_waiver`                | ✅ | ✅ | |
 | `remove_fee_waiver`             | ✅ | ✅ | |
-| `set_fee_rate`                  | ✅ | ✅ | Also enforces the fee cap at propose time. |
+| `set_fee_rate`                  | ✅ | ✅ | Enforces the fee cap at propose time. |
+| `set_fee_cap`                   | ✅ | ✅ | **Was missing entirely** — `FeeCap` storage existed but was unreachable, so the cap could never differ from the default (`MAX_FEE_RATE_BPS`). Added by this pass. |
 | `pause`                         | ✅ | ✅ | **Was missing entirely** — `Paused` storage and every `require_not_paused` gate existed, but no entrypoint could ever set the flag. Added by this pass. |
 | `unpause`                       | ✅ | ✅ | Added alongside `pause`. |
-| `execute_fee_rate_change`       | — | n/a (intentionally public) | Access control is the timelock (`effective_at`), not caller identity — anyone may trigger it once due. |
+| `execute_fee_rate_change`       | — | n/a (intentionally public) | Access control is the timelock (`effective_at`), not caller identity — anyone may trigger it once due. Now also re-checks the fee cap at execution time, not just at proposal time, so a cap lowered while a change is in flight can't let a stale rate through. |
 
 ## Treasury contract (`contracts/treasury/src/lib.rs`)
 
@@ -72,9 +73,8 @@ conditions are the access control, not an admin check.
 ## Conclusion
 
 Every admin mutator in `treasury` and `resolution` already performed both
-checks. `market` had one entrypoint that was entirely absent
-(`set_resolution_contract` — storage helpers and tests already existed for
-it, but no contract entrypoint ever called them) and one storage flag with
-no way to ever be set (`pause`/`unpause`) — those are the gaps this audit
-closed. No admin mutator was found calling `require_auth()` without also
-verifying the caller against the stored admin.
+checks. `market` had two entrypoints that were entirely absent
+(`set_resolution_contract`, `set_fee_cap`) and one storage flag with no way
+to ever be set (`pause`/`unpause`) — those are the gaps this audit closed.
+No admin mutator was found calling `require_auth()` without also verifying
+the caller against the stored admin.
