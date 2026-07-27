@@ -35,6 +35,7 @@
 //! | `update_market_oracle`             | admin                           |
 //! | `add_fee_waiver` / `remove_fee_waiver` | admin                       |
 //! | `pause` / `unpause`                | admin                           |
+//! | `close_market_to_deposits`         | admin                           |
 //! | `set_resolution_contract`          | admin                           |
 //! | `set_fee_cap`                      | admin                           |
 //!
@@ -1668,6 +1669,65 @@ impl MarketContract {
             i += 1;
         }
         Ok(result)
+    }
+
+    /// Prevent new collateral deposits into a market while preserving all
+    /// other functionality (trading, withdrawals, and settlement).
+    ///
+    /// Once closed, any call to [`deposit_collateral`] for this market will
+    /// return [`ContractError::MarketClosedToDeposits`]. The flag is
+    /// idempotent — calling this on an already-closed market is a no-op and
+    /// succeeds without error.
+    ///
+    /// # Use cases
+    /// - Lock down a market approaching its expiry to prevent last-minute
+    ///   position changes.
+    /// - Halt new deposits during a resolution or dispute window.
+    ///
+    /// # Arguments
+    /// * `env`       – Soroban contract environment
+    /// * `admin`     – Address that must match the stored contract admin
+    /// * `market_id` – Unique identifier of the market to close
+    ///
+    /// # Errors
+    /// - [`ContractError::NotInitialized`] – contract has not been initialised yet
+    /// - [`ContractError::NotAdmin`]       – `admin` is not the stored admin
+    /// - [`ContractError::MarketNotFound`] – no market with `market_id` exists
+    ///
+    /// # Events
+    /// Emits [`events::MarketClosedToDepositsEvent`] with `market_id`,
+    /// `admin`, and `closed_at` timestamp so off-chain indexers can track
+    /// when a market was locked.
+    pub fn close_market_to_deposits(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+
+        // Only the stored admin may close a market to deposits.
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        // Load the market — returns MarketNotFound for an unknown market_id.
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+
+        // Idempotent: if already closed, nothing to do.
+        if !market.closed_to_deposits {
+            market.closed_to_deposits = true;
+            storage::set_market(&env, market_id, &market)?;
+        }
+
+        // Always emit the event so indexers can observe every admin call,
+        // including redundant ones (useful for audit trails).
+        let closed_at = env.ledger().timestamp();
+        events::emit_market_closed_to_deposits(&env, market_id, &admin, closed_at);
+
+        Ok(())
     }
 }
 
