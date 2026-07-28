@@ -255,6 +255,50 @@ mod test {
     }
 
     #[test]
+    fn test_initialize_market_no_id_reuse_after_cancel() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Market to cancel");
+        let end_time = env.ledger().timestamp() + 86400;
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let collateral_token = Address::generate(&env);
+
+        // Create first market (ID 1)
+        let market_id_1 = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+        assert_eq!(market_id_1, 1);
+
+        // Cancel the first market
+        client.cancel_market(&admin, &market_id_1);
+
+        // Verify market is canceled
+        let market = get_market_from_storage(&env, &contract_id, market_id_1);
+        assert_eq!(market.status, MarketStatus::Canceled);
+
+        // Create second market - should get ID 2, not reuse ID 1
+        let question_2 = String::from_str(&env, "New market after cancel");
+        let market_id_2 = client.initialize_market(
+            &admin,
+            &question_2,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+        assert_eq!(market_id_2, 2);
+
+        // Verify the new market exists and is active
+        let market_2 = get_market_from_storage(&env, &contract_id, market_id_2);
+        assert_eq!(market_2.status, MarketStatus::Active);
+    }
+
+    #[test]
     #[should_panic(expected = "Error(Contract, #41)")]
     fn test_initialize_market_non_admin_fails() {
         let (env, _admin, client, _contract_id) = create_test_contract();
