@@ -227,10 +227,10 @@ impl TreasuryContract {
 
     /// Deregister a market contract, revoking its ability to call `collect_fee`.
     ///
-    /// Only the admin may call this.
+    /// Removing an unknown market is a no-op that preserves the existing
+    /// registry contents.
     ///
-    /// # Errors
-    /// - [`TreasuryError::CallerNotMarket`] — `market_contract` is not currently registered.
+    /// Only the admin may call this.
     pub fn remove_market(
         env: Env,
         caller: Address,
@@ -248,7 +248,7 @@ impl TreasuryContract {
 
         let markets = storage::get_authorized_markets(&env);
         if !markets.contains(&market_contract) {
-            return Err(TreasuryError::CallerNotMarket);
+            return Ok(());
         }
         let mut updated = Vec::new(&env);
         for m in markets.iter() {

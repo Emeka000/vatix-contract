@@ -1988,6 +1988,51 @@ mod test {
     // ========== Admin auth audit: missing/insufficiently-checked mutators ==========
 
     #[test]
+    fn test_update_market_oracle_invalidates_old_signatures() {
+        use crate::error::ContractError;
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolver = Address::generate(&env);
+
+        let mut old_rng = OsRng;
+        let old_signing_key = SigningKey::generate(&mut old_rng);
+        let old_oracle_pubkey = BytesN::from_array(&env, &old_signing_key.verifying_key().to_bytes());
+
+        let mut new_rng = OsRng;
+        let new_signing_key = SigningKey::generate(&mut new_rng);
+        let new_oracle_pubkey = BytesN::from_array(&env, &new_signing_key.verifying_key().to_bytes());
+
+        let question = String::from_str(&env, "Rotation invalidates old signatures");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &old_oracle_pubkey,
+            &Address::generate(&env),
+        );
+
+        let message = crate::oracle::construct_oracle_message(&env, market_id, true);
+        let old_signature = BytesN::from_array(&env, &old_signing_key.sign(message.to_array().as_slice()).to_bytes());
+
+        client.update_market_oracle(&admin, &market_id, &new_oracle_pubkey);
+
+        let market_id_str = String::from_str(&env, "1");
+        let old_result = client.try_resolve_market(&resolver, &market_id_str, &true, &old_signature);
+        assert_eq!(old_result, Err(Ok(ContractError::InvalidSignature)));
+
+        let message = crate::oracle::construct_oracle_message(&env, market_id, true);
+        let new_signature = BytesN::from_array(&env, &new_signing_key.sign(message.to_array().as_slice()).to_bytes());
+        let new_result = client.try_resolve_market(&resolver, &market_id_str, &true, &new_signature);
+        assert_eq!(new_result, Ok(Ok(())));
+
+        let market = env.as_contract(&contract_id, || storage::get_market(&env, market_id).unwrap().unwrap());
+        assert_eq!(market.oracle_pubkey, new_oracle_pubkey);
+    }
+
+    #[test]
     fn test_non_admin_cannot_call_admin_mutators() {
         use crate::error::ContractError;
         use crate::types::AdapterType;
