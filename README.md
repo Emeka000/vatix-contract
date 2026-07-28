@@ -39,6 +39,10 @@ See [`docs/cross-contract-call-graph.md`](docs/cross-contract-call-graph.md) for
 
 ## Documentation
 
+### Security
+
+Please review our [Security Policy](SECURITY.md) for information on reporting contract vulnerabilities.
+
 ### Storage Migrations
 
 The Market contract uses storage versioning to ensure data integrity across upgrades. See comprehensive documentation:

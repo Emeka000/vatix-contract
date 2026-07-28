@@ -2314,3 +2314,54 @@ mod test {
         assert!(market.resolved_at.is_some());
     }
 }
+
+#[test]
+fn test_decode_v3_market_blob_fails() {
+    use soroban_sdk::{xdr::{FromXdr, ToXdr}, Env, contracttype, Address, BytesN, String};
+    use crate::types::{MarketStatus, AdapterType, Market};
+    
+    let env = Env::default();
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[contracttype]
+    pub struct MarketV3 {
+        pub id: u32,
+        pub question: String,
+        pub end_time: u64,
+        pub oracle_pubkey: BytesN<32>,
+        pub status: MarketStatus,
+        pub result: Option<bool>,
+        pub creator: Address,
+        pub created_at: u64,
+        pub collateral_token: Address,
+        pub price_bps: i128,
+        pub resolver: Option<Address>,
+        pub resolved_at: Option<u64>,
+        pub adapter_type: AdapterType,
+        pub outcome_count: u32,
+    }
+
+    let v3_market = MarketV3 {
+        id: 1,
+        question: String::from_str(&env, "Will it rain?"),
+        end_time: 1234567890,
+        oracle_pubkey: BytesN::from_array(&env, &[0; 32]),
+        status: MarketStatus::Active,
+        result: None,
+        creator: Address::generate(&env),
+        created_at: 1234560000,
+        collateral_token: Address::generate(&env),
+        price_bps: 5000,
+        resolver: None,
+        resolved_at: None,
+        adapter_type: AdapterType::Ed25519,
+        outcome_count: 2,
+    };
+
+    // Serialize V3 market
+    let v3_xdr = v3_market.to_xdr(&env);
+
+    // Attempting to decode as V4 Market should fail because closed_to_deposits is missing
+    let decode_result = Market::from_xdr(&env, &v3_xdr);
+    assert!(decode_result.is_err(), "Decoding V3 market as V4 should fail intentionally because it lacks closed_to_deposits");
+}
