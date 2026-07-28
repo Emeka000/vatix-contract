@@ -1350,6 +1350,18 @@ impl MarketContract {
             .collateral_token
     }
 
+    /// Return the full [`Market`] struct for a given market ID.
+    ///
+    /// This is the canonical read endpoint for off-chain consumers (indexers,
+    /// the web app, and companion contracts) that need the complete market
+    /// snapshot — status, fees, `closed_to_deposits`, price, resolver, etc.
+    ///
+    /// # Errors
+    /// - [`ContractError::MarketNotFound`] – no market exists for `market_id`.
+    pub fn get_market(env: Env, market_id: u32) -> Result<Market, ContractError> {
+        storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)
+    }
+
     /// Return the registered outcome-token contract address, if any.
     pub fn get_outcome_token_contract(env: Env) -> Option<Address> {
         storage::get_outcome_token_contract(&env)
