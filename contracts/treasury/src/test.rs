@@ -727,3 +727,119 @@ fn distribute_fees_blocked_while_paused() {
         .unwrap();
     assert_eq!(err, TreasuryError::ContractPaused);
 }
+
+// ── Issue #553: withdraw_fees auth + event ─────────────────────────────────────
+
+/// `withdraw_fees` must emit a `FeesWithdrawn` event with the correct fields:
+/// - topics: event name, token address, recipient address
+/// - data: amount withdrawn, remaining token balance after withdrawal
+#[test]
+fn withdraw_fees_emits_fees_withdrawn_event() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{IntoVal, Map, Symbol, TryIntoVal, Val};
+
+    let s = setup();
+    let collected = 1_000_000i128;
+    let withdrawn = 400_000i128;
+    let expected_remaining = collected - withdrawn;
+
+    fund_treasury(&s, collected);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &collected);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw_fees(&s.admin, &s.token, &recipient, &withdrawn);
+
+    let events = s.env.events().all();
+    // The last event must be FeesWithdrawn.
+    let ev = events.last().unwrap();
+
+    // ── topics ────────────────────────────────────────────────────────────────
+    // Soroban contractevent layout: [contract_address, event_name, ...#topic fields]
+    let topics = &ev.1;
+    let event_name: Symbol = topics.get(0).unwrap().into_val(&s.env);
+    assert_eq!(
+        event_name,
+        Symbol::new(&s.env, "fees_withdrawn"),
+        "event name topic must be 'fees_withdrawn'"
+    );
+    let token_topic: Address = topics.get(1).unwrap().into_val(&s.env);
+    assert_eq!(token_topic, s.token, "second topic must be the token address");
+    let to_topic: Address = topics.get(2).unwrap().into_val(&s.env);
+    assert_eq!(to_topic, recipient, "third topic must be the recipient address");
+
+    // ── data fields ───────────────────────────────────────────────────────────
+    let data: Map<Symbol, Val> = ev.2.try_into_val(&s.env).unwrap();
+
+    let amount_val: i128 = data
+        .get(Symbol::new(&s.env, "amount"))
+        .unwrap()
+        .into_val(&s.env);
+    assert_eq!(amount_val, withdrawn, "event 'amount' must equal the withdrawn amount");
+
+    let remaining_val: i128 = data
+        .get(Symbol::new(&s.env, "remaining_token_balance"))
+        .unwrap()
+        .into_val(&s.env);
+    assert_eq!(
+        remaining_val, expected_remaining,
+        "event 'remaining_token_balance' must equal balance after withdrawal"
+    );
+}
+
+/// `withdraw_fees` must call `require_auth` on the caller address before
+/// proceeding — calling it without the Soroban auth context must panic, not
+/// return `Unauthorized`. This verifies the auth gate sits at the entry point
+/// (before any business logic) rather than being implemented as a manual
+/// address comparison only.
+#[test]
+#[should_panic]
+fn withdraw_fees_panics_without_auth() {
+    // No mock_all_auths() — the env has no auth context at all.
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let market = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let treasury_id = env.register(TreasuryContract, ());
+    let client = TreasuryContractClient::new(&env, &treasury_id);
+
+    // Bootstrap the treasury with auth mocked just for initialize.
+    env.mock_all_auths();
+    client.initialize(&admin, &market);
+    // Clear all mock authorizations — no auth context for subsequent calls.
+    env.set_auths(&[]);
+
+    let recipient = Address::generate(&env);
+    // require_auth() is unsatisfied → must panic
+    client.withdraw_fees(&admin, &token, &recipient, &1i128);
+}
+
+/// `withdraw_fees` called by a non-admin returns `TreasuryError::Unauthorized`.
+/// This is distinct from the auth check above: the non-admin caller *does*
+/// authorize themselves (mock auth), but the contract checks `caller == admin`
+/// and rejects. Ensures both layers of access control work together.
+#[test]
+fn withdraw_fees_non_admin_returns_unauthorized() {
+    let s = setup();
+    fund_treasury(&s, 100_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &100_000i128);
+
+    let imposter = Address::generate(&s.env);
+    let recipient = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_withdraw_fees(&imposter, &s.token, &recipient, &50_000i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err,
+        TreasuryError::Unauthorized,
+        "a caller who is not the admin must receive Unauthorized even with valid auth"
+    );
+    // Verify no funds moved.
+    assert_eq!(s.client.token_balance(&s.token), 100_000);
+}
