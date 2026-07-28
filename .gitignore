@@ -7,6 +7,13 @@ target/
 Cargo.lock
 **/*.rs.bk
 
+# Rust test / coverage artifacts
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+tarpaulin-report.json
+
 # IDE
 .vscode/
 .idea/
@@ -22,8 +29,10 @@ Thumbs.db
 *.dylib
 *.dll
 
+# Soroban / WASM test snapshots — regenerate with `cargo test`
 contracts/*/test_snapshots
 /test_snapshots/
+**/*.snap
 
 # Node / Next.js
 node_modules/
@@ -33,8 +42,15 @@ apps/web/out/
 dist/
 apps/web/tsconfig.tsbuildinfo
 
+# Jest / Vitest snapshots
+**/__snapshots__/
+
 # Generated issue exports (regenerate with pnpm issues:generate)
 scripts/issues/generated/
+
+# Local environment overrides (keep .env.local.example committed)
+.env.local
+.env.*.local
 
 # Personal notes
 vrickish.md

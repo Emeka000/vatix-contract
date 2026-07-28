@@ -7,7 +7,15 @@ import { TxResult } from "@/components/TxResult";
 import { useToast } from "@/context/ToastContext";
 import { parseContractError } from "@/lib/errors";
 
-export function WithdrawForm() {
+interface WithdrawFormProps {
+  /**
+   * Optional callback invoked after a successful withdrawal transaction.
+   * Use this to trigger a position refetch in the parent (e.g. PositionPanel).
+   */
+  onSuccess?: () => void;
+}
+
+export function WithdrawForm({ onSuccess }: WithdrawFormProps) {
   const { address } = useWallet();
   const { showToast } = useToast();
   const [amount, setAmount] = useState("");
@@ -53,6 +61,10 @@ export function WithdrawForm() {
 
       setTxHash(result.hash);
       setAmount("");
+
+      // Notify parent so it can refetch the position and reflect the updated
+      // on-chain state without requiring a full page reload (#591).
+      onSuccess?.();
     } catch (err) {
       console.error("Withdrawal error:", err);
       const reason = parseContractError(err);

@@ -53,6 +53,8 @@ The Market contract uses storage versioning to ensure data integrity across upgr
   
 - **[Migration History](contracts/market/MIGRATION.md)** - Specific changes and data migration notes
 
+- **[Upgrade Dry-Run Guide](docs/upgrade-dry-run.md)** - How to simulate a contract upgrade and storage migration with `--send=no` before applying to testnet or mainnet. Includes a ready-to-run script stub (`scripts/upgrade-dry-run.sh`).
+
 **Quick Reference:**
 - Current storage version: `3`
 - Always bump version for: field changes, type changes, semantic changes to stored data
