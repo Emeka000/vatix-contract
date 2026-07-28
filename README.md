@@ -186,6 +186,41 @@ cd ../outcome-token && cargo build
 cd ../resolution && cargo build
 ```
 
+### Cargo Feature Flags
+
+The Market contract supports optional features via Cargo feature flags. These features control compilation of optional modules and dependencies.
+
+#### oracle-adapter Feature
+
+The `oracle-adapter` feature enables the oracle adapter module (`contracts/market/src/oracle_adapter.rs`), which provides:
+
+- `OracleAdapter` trait for abstracting over different oracle providers
+- `ReflectorAdapter` implementation for the Reflector on-chain oracle
+- `PythAdapter` stub for future Pyth Network integration
+- `AnyAdapter` enum for runtime dispatch between adapter types
+
+**Status:** Not enabled by default. The feature is gated because the mainnet switch for oracle adapters is not yet implemented (see issue #139).
+
+**Build with oracle-adapter:**
+```bash
+cd contracts/market
+cargo build --features oracle-adapter
+```
+
+**Build without oracle-adapter (default):**
+```bash
+cd contracts/market
+cargo build
+# or explicitly
+cargo build --no-default-features
+```
+
+**When to use:**
+- **With feature:** When developing or testing oracle adapter functionality, or when the mainnet switch is implemented
+- **Without feature:** For standard market contract deployment using the existing Ed25519 oracle verification path
+
+**Documentation:** See [`docs/adr-001-oracle-adapter.md`](docs/adr-001-oracle-adapter.md) for the complete design rationale, implementation details, and comparison of Reflector vs Pyth oracles.
+
 ### Workspace compile check
 
 CI runs `cargo check --workspace --all-targets` in one job (`.github/workflows/ci.yml`) so a break in any single crate (`contracts/market`, `contracts/treasury`, `contracts/resolution`, `contracts/outcome-token`) fails the build immediately, even if that crate isn't otherwise touched by the PR. Run it locally before pushing:
