@@ -607,4 +607,46 @@ mod tests {
             assert_eq!(require_not_paused(&env), Err(ContractError::ContractPaused));
         });
     }
+
+    #[test]
+    fn test_validate_metadata_uri_none_passes() {
+        let uri: Option<String> = None;
+        assert!(validate_metadata_uri(&uri).is_ok());
+    }
+
+    #[test]
+    fn test_validate_metadata_uri_valid_passes() {
+        let env = soroban_sdk::Env::default();
+        let uri = Some(String::from_str(&env, "ipfs://QmXxx"));
+        assert!(validate_metadata_uri(&uri).is_ok());
+    }
+
+    #[test]
+    fn test_validate_metadata_uri_empty_fails() {
+        let env = soroban_sdk::Env::default();
+        let uri = Some(String::from_str(&env, ""));
+        assert_eq!(
+            validate_metadata_uri(&uri),
+            Err(ContractError::InvalidMetadataUri)
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_uri_overlong_fails() {
+        let env = soroban_sdk::Env::default();
+        let long_str = "a".repeat(2049);
+        let uri = Some(String::from_str(&env, &long_str));
+        assert_eq!(
+            validate_metadata_uri(&uri),
+            Err(ContractError::InvalidMetadataUri)
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_uri_exactly_max_length_passes() {
+        let env = soroban_sdk::Env::default();
+        let max_str = "a".repeat(2048);
+        let uri = Some(String::from_str(&env, &max_str));
+        assert!(validate_metadata_uri(&uri).is_ok());
+    }
 }
