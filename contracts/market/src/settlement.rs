@@ -220,6 +220,18 @@ pub fn batch_settle_positions(
     market_id: u32,
     users: Vec<Address>,
 ) -> Result<i128, ContractError> {
+    // Guard: reject empty batches immediately to surface caller bugs early
+    // rather than silently returning 0 with no indication anything was wrong.
+    if users.is_empty() {
+        return Err(ContractError::BatchTooLarge);
+    }
+
+    // Guard: cap batch size to prevent gas-griefing. Callers with more users
+    // should use the paginated `settle_positions_page` endpoint instead.
+    if users.len() > crate::MAX_BATCH_SETTLE_SIZE {
+        return Err(ContractError::BatchTooLarge);
+    }
+
     // Validate the market once before iterating users.
     let market = storage::get_market(env, market_id)?.ok_or(ContractError::MarketNotFound)?;
     if market.status != MarketStatus::Resolved {
@@ -899,7 +911,10 @@ mod tests {
         let market_id =
             client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token);
 
-        let users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        // Pass a non-empty list so the market-status guard (not the empty-batch guard)
+        // is the first thing that fires.
+        let mut users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        users.push_back(Address::generate(&env));
         let result = env.as_contract(&contract_id, || {
             batch_settle_positions(&env, market_id, users)
         });
@@ -915,7 +930,8 @@ mod tests {
             storage::set_version(&env);
         });
 
-        let users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        let mut users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        users.push_back(Address::generate(&env));
         let result = env.as_contract(&contract_id, || {
             batch_settle_positions(&env, 999, users)
         });
@@ -1109,7 +1125,8 @@ mod tests {
             storage::set_market(&env, market.id, &market).unwrap();
         });
 
-        let users: Vec<Address> = Vec::new(&env);
+        let mut users: Vec<Address> = Vec::new(&env);
+        users.push_back(Address::generate(&env));
         let result = env.as_contract(&contract_id, || {
             batch_settle_positions(&env, market.id, users)
         });
@@ -1164,5 +1181,58 @@ mod tests {
         assert!(total_payout > 0, "resolved market page-settle must pay out");
         assert!(is_complete);
         assert_eq!(next_index, 2); // two participants were set up by setup_resolved_market
+    }
+
+    // --- Issue #551: batch size hardening ---
+
+    /// An empty user list must be rejected immediately with `BatchTooLarge`.
+    /// This surfaces caller bugs early rather than silently returning 0.
+    #[test]
+    fn test_batch_settle_rejects_empty_batch() {
+        let (env, contract_id, market_id, _) = setup_resolved_market();
+
+        let users: Vec<Address> = Vec::new(&env);
+        let result = env.as_contract(&contract_id, || {
+            batch_settle_positions(&env, market_id, users)
+        });
+        assert_eq!(result, Err(ContractError::BatchTooLarge));
+    }
+
+    /// A user list whose length exceeds `MAX_BATCH_SETTLE_SIZE` must be
+    /// rejected with `BatchTooLarge` to prevent gas-griefing.
+    #[test]
+    fn test_batch_settle_rejects_oversized_batch() {
+        let (env, contract_id, market_id, _) = setup_resolved_market();
+
+        // Build a list that is exactly one over the limit.
+        let mut users: Vec<Address> = Vec::new(&env);
+        for _ in 0..=crate::MAX_BATCH_SETTLE_SIZE {
+            users.push_back(Address::generate(&env));
+        }
+
+        let result = env.as_contract(&contract_id, || {
+            batch_settle_positions(&env, market_id, users)
+        });
+        assert_eq!(result, Err(ContractError::BatchTooLarge));
+    }
+
+    /// A list that is exactly `MAX_BATCH_SETTLE_SIZE` entries long must be
+    /// accepted — the guard must be `>`, not `>=`.
+    /// Users with no position are skipped, so total payout is 0 here (all
+    /// addresses are freshly generated ghosts), but the call must not error.
+    #[test]
+    fn test_batch_settle_accepts_batch_at_max_size() {
+        let (env, contract_id, market_id, _) = setup_resolved_market();
+
+        let mut users: Vec<Address> = Vec::new(&env);
+        for _ in 0..crate::MAX_BATCH_SETTLE_SIZE {
+            users.push_back(Address::generate(&env));
+        }
+
+        let result = env.as_contract(&contract_id, || {
+            batch_settle_positions(&env, market_id, users)
+        });
+        // No positions exist for any ghost address — payout is 0, not an error.
+        assert_eq!(result, Ok(0));
     }
 }

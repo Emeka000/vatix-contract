@@ -82,6 +82,11 @@ pub enum ContractError {
     /// Share amounts must be non-negative, and at least one side must be positive.
     InvalidShareAmount = 13,
 
+    /// The batch supplied to `batch_settle_positions` was either empty or exceeded
+    /// `MAX_BATCH_SETTLE_SIZE`. Empty batches are rejected to surface caller bugs
+    /// early; oversized batches are rejected to prevent gas-griefing attacks.
+    BatchTooLarge = 14,
+
     // ========== Oracle Errors (20-29) ==========
     /// Oracle signature verification failed.
     ///
@@ -249,6 +254,7 @@ mod tests {
         assert_eq!(ContractError::PositionAlreadySettled as u32, 11);
         assert_eq!(ContractError::NoPositionFound as u32, 12);
         assert_eq!(ContractError::InvalidShareAmount as u32, 13);
+        assert_eq!(ContractError::BatchTooLarge as u32, 14);
         assert_eq!(ContractError::InvalidSignature as u32, 20);
         assert_eq!(ContractError::UnauthorizedOracle as u32, 21);
         assert_eq!(ContractError::InvalidOutcome as u32, 22);
@@ -315,6 +321,7 @@ mod tests {
             (ContractError::PositionAlreadySettled, 11),
             (ContractError::NoPositionFound, 12),
             (ContractError::InvalidShareAmount, 13),
+            (ContractError::BatchTooLarge, 14),
             (ContractError::InvalidSignature, 20),
             (ContractError::UnauthorizedOracle, 21),
             (ContractError::InvalidOutcome, 22),
