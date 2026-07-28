@@ -147,6 +147,10 @@ pnpm dev          # http://localhost:3002
 pnpm build:web
 ```
 
+> **Freighter wallet integration:** See [`docs/freighter-integration-guide.md`](docs/freighter-integration-guide.md)
+> for setup instructions, transaction signing flow, ScVal helpers, and
+> troubleshooting — including [network mismatch errors](docs/freighter-integration-guide.md#network-mismatch-errors-issue-587).
+
 ## Getting Started
 
 ### Prerequisites

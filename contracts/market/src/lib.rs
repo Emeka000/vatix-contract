@@ -651,6 +651,66 @@ impl MarketContract {
         Ok(())
     }
 
+    /// Explicitly reopen a previously canceled market, restoring it to Active.
+    ///
+    /// This is the **only** sanctioned path from `Canceled` back to `Active`.
+    /// All other entry points that mutate market state either require `Active`
+    /// as a precondition or transition to `Resolved`/`Canceled` — never back
+    /// to `Active`. Calling [`reopen_market`] on a market that is already
+    /// `Active` or `Resolved` is rejected; only `Canceled` markets may be
+    /// reopened.
+    ///
+    /// # When to use
+    /// Use this when a market was canceled prematurely (e.g. an admin error)
+    /// and the admin wants to restore it to its original trading state. Users
+    /// who already reclaimed collateral via [`withdraw_canceled_collateral`]
+    /// will need to re-deposit if they wish to resume trading.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `admin` - Must be the stored admin address (authorizes the call)
+    /// * `market_id` - Identifier of the canceled market to reopen
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin
+    /// - [`ContractError::MarketNotFound`] – the market does not exist
+    /// - [`ContractError::MarketAlreadyResolved`] – the market is resolved; resolved
+    ///   markets are terminal and can never return to Active
+    /// - [`ContractError::MarketNotActive`] – the market is already Active; calling
+    ///   reopen on an Active market is a no-op and is rejected to surface bugs
+    ///
+    /// # Events
+    /// Emits [`MarketReopened`] with `market_id`, `admin`, and `reopened_at`.
+    pub fn reopen_market(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
+
+        // 1. Authorization: only the stored admin may reopen a market.
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        // 2. Load the market and enforce the reopen policy (Canceled only).
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        validation::validate_reopenable(&market.status)?;
+
+        // 3. Transition back to Active and persist.
+        market.status = MarketStatus::Active;
+        storage::set_market(&env, market_id, &market)?;
+
+        // 4. Emit the reopen event for off-chain indexers.
+        events::emit_market_reopened(&env, market_id, &admin, env.ledger().timestamp());
+
+        Ok(())
+    }
+
     /// Reclaim deposited collateral from a canceled market.
     ///
     /// When a market is canceled before resolution there is no winning outcome,
