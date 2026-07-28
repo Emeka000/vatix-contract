@@ -96,6 +96,15 @@ use vatix_resolution_contract::ResolutionContractClient;
 /// integrators and users advance notice of a fee change before it lands.
 pub const FEE_RATE_TIMELOCK_SECONDS: u64 = 172_800;
 
+/// Maximum number of addresses that a single `batch_settle_positions` call may
+/// process (Issue #551). Callers who need to settle more positions should either
+/// use the paginated `settle_positions_page` endpoint, or split their list into
+/// multiple calls of at most this many addresses.
+///
+/// The cap prevents gas-griefing: a malicious or buggy caller cannot force the
+/// contract to iterate an unbounded list in one transaction.
+pub const MAX_BATCH_SETTLE_SIZE: u32 = 100;
+
 #[contract]
 pub struct MarketContract;
 
