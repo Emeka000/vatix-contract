@@ -170,6 +170,66 @@ fn finalize_calls_resolve_market_on_market_contract() {
     assert!(candidate.finalized_at.is_some());
 }
 
+/// Test that proposal with valid signature is accepted via market contract delegation.
+///
+/// Verifies that the resolution contract correctly delegates signature verification
+/// to the market contract's verify_signature entrypoint.
+#[test]
+fn propose_with_valid_signature_succeeds_via_delegation() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    let valid_sig = signature(&env);
+    
+    // This should succeed because mock_all_auths intercepts the cross-contract call
+    let candidate_id = client.propose(
+        &proposer,
+        &1,
+        &true,
+        &valid_sig,
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &300,
+        &10_000_000i128,
+    );
+
+    assert_eq!(candidate_id, 1);
+    let candidate = client.get_candidate(&candidate_id).unwrap();
+    assert_eq!(candidate.market_id, 1);
+    assert_eq!(candidate.outcome, true);
+}
+
+/// Test that proposal with invalid signature is rejected via market contract delegation.
+///
+/// Verifies that when the market contract rejects a signature, the resolution
+/// contract propagates that error back to the caller.
+#[test]
+fn propose_with_invalid_signature_fails_via_delegation() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    // Use an invalid signature (all zeros) to trigger rejection
+    let invalid_sig = BytesN::from_array(&env, &[0u8; 64]);
+    
+    let result = client.try_propose(
+        &proposer,
+        &1,
+        &true,
+        &invalid_sig,
+        &(env.ledger().timestamp() + 600),
+        &evidence(&env),
+        &300,
+        &10_000_000i128,
+    );
+
+    // The market contract should reject the invalid signature
+    assert!(result.is_err());
+}
+
 // ── #380: default challenge window ────────────────────────────────────────────
 
 #[test]
