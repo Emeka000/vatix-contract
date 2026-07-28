@@ -397,15 +397,16 @@ fn remove_market_deregisters_market() {
 }
 
 #[test]
-fn remove_market_errors_if_not_registered() {
+fn remove_market_is_idempotent_for_unknown_market() {
     let s = setup();
     let unknown = Address::generate(&s.env);
-    let err = s
-        .client
-        .try_remove_market(&s.admin, &unknown)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, TreasuryError::CallerNotMarket);
+
+    assert_eq!(s.client.try_remove_market(&s.admin, &unknown), Ok(Ok(())));
+
+    let markets = s.client.list_markets();
+    assert_eq!(markets.len(), 1);
+    assert!(markets.contains(&s.market));
+    assert!(s.client.is_authorized_market(&s.market));
 }
 
 #[test]

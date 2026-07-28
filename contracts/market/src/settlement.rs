@@ -584,6 +584,62 @@ mod tests {
         assert!(pos.is_settled);
     }
 
+    #[test]
+    fn test_settle_position_refunds_collateral_for_no_winner() {
+        use crate::{MarketContract, MarketContractClient};
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+        const STROOPS_PER_USDC: i128 = 10_000_000;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(&env, &admin);
+            storage::set_version(&env);
+        });
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin);
+        let collateral_token = token.address();
+        let sac = StellarAssetClient::new(&env, &collateral_token);
+        let token_client = TokenClient::new(&env, &collateral_token);
+
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let question = String::from_str(&env, "No winner refund path");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        let user = Address::generate(&env);
+        let deposit = 100 * STROOPS_PER_USDC;
+        sac.mint(&user, &deposit);
+        client.deposit_collateral(&user, &market_id, &deposit);
+
+        client.update_position(&user, &market_id, &deposit, &0i128, &5_000i128);
+
+        env.as_contract(&contract_id, || {
+            let mut market = storage::get_market(&env, market_id).unwrap().unwrap();
+            market.status = MarketStatus::Resolved;
+            market.result = None;
+            storage::set_market(&env, market_id, &market).unwrap();
+        });
+
+        let payout = client.settle_position(&user, &market_id);
+        assert_eq!(payout, deposit);
+        assert_eq!(token_client.balance(&user), deposit);
+        assert_eq!(token_client.balance(&contract_id), 0);
+    }
+
     /// End-to-end settlement through the contract client, asserting that the
     /// SAC token payout actually reaches the user:
     /// init -> create market -> deposit -> buy -> resolve -> settle.
