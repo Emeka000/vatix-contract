@@ -1967,4 +1967,151 @@ mod test {
         let applied = client.execute_fee_rate_change();
         assert_eq!(applied, 1_000);
     }
+
+    // ========== get_market view completeness tests (Issue #550) ==========
+
+    /// Verify that `get_market` returns an error when the market does not exist.
+    #[test]
+    fn test_get_market_not_found() {
+        use crate::error::ContractError;
+
+        let (_env, _admin, client, _contract_id) = create_test_contract();
+
+        let result = client.try_get_market(&999u32);
+        assert_eq!(result, Err(Ok(ContractError::MarketNotFound)));
+    }
+
+    /// Snapshot-assert every field of the returned [`Market`] struct.
+    ///
+    /// This test is intentionally exhaustive: it uses a destructuring let to
+    /// bind every field by name so that adding a new field to `Market` without
+    /// updating this test causes a compile-time "missing field" error — the
+    /// acceptance criterion for Issue #550.
+    #[test]
+    fn test_get_market_returns_all_fields() {
+        use crate::types::{AdapterType, MarketStatus};
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Will ETH reach $10k by end of year?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let oracle_pubkey = BytesN::from_array(&env, &[2u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let created_at = env.ledger().timestamp();
+
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        let market = client.get_market(&market_id);
+
+        // Destructure every field — adding a new field to `Market` without
+        // updating this pattern produces a compile error, which is exactly the
+        // desired "test fails if a new public field is omitted" behaviour.
+        let crate::types::Market {
+            id,
+            question: market_question,
+            end_time: market_end_time,
+            oracle_pubkey: market_oracle_pubkey,
+            status,
+            result,
+            creator,
+            created_at: market_created_at,
+            collateral_token: market_collateral_token,
+            price_bps,
+            resolver,
+            resolved_at,
+            adapter_type,
+            outcome_count,
+            closed_to_deposits,
+        } = market;
+
+        assert_eq!(id, market_id);
+        assert_eq!(market_question, question);
+        assert_eq!(market_end_time, end_time);
+        assert_eq!(market_oracle_pubkey, oracle_pubkey);
+        assert_eq!(status, MarketStatus::Active);
+        assert_eq!(result, None);
+        assert_eq!(creator, admin);
+        assert_eq!(market_created_at, created_at);
+        assert_eq!(market_collateral_token, collateral_token);
+        // Initial price is 50 % (5 000 bps) as set by initialize_market.
+        assert_eq!(price_bps, 5_000i128);
+        // Resolver and resolved_at are only populated after resolution.
+        assert_eq!(resolver, None);
+        assert_eq!(resolved_at, None);
+        // Default adapter for new markets is Ed25519.
+        assert_eq!(adapter_type, AdapterType::Ed25519);
+        // Binary markets always have exactly two outcomes.
+        assert_eq!(outcome_count, 2u32);
+        // Markets are open to deposits at creation.
+        assert!(!closed_to_deposits);
+    }
+
+    /// Verify that `get_market` reflects `closed_to_deposits` after
+    /// `close_market_to_deposits` is called.
+    #[test]
+    fn test_get_market_reflects_closed_to_deposits() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Closed-deposits test market");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let oracle_pubkey = BytesN::from_array(&env, &[3u8; 32]);
+        let collateral_token = Address::generate(&env);
+
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        // Initially open to deposits.
+        assert!(!client.get_market(&market_id).closed_to_deposits);
+
+        client.close_market_to_deposits(&admin, &market_id);
+
+        // After closing, the flag must be reflected by get_market.
+        assert!(client.get_market(&market_id).closed_to_deposits);
+    }
+
+    /// Verify that `get_market` reflects `status` and `resolver` / `resolved_at`
+    /// after a successful resolution.
+    #[test]
+    fn test_get_market_reflects_resolved_status() {
+        use crate::types::MarketStatus;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Resolution status test market");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let (oracle_pubkey, signature) =
+            generate_test_keypair_and_sign(&env, 1, true);
+        let collateral_token = Address::generate(&env);
+
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+        );
+
+        // Advance time past end_time so the market can be resolved.
+        env.ledger().set_timestamp(end_time + 1);
+
+        client.resolve_market(&market_id, &true, &signature);
+
+        let market = client.get_market(&market_id);
+        assert_eq!(market.status, MarketStatus::Resolved);
+        assert_eq!(market.result, Some(true));
+        // resolver and resolved_at are populated after resolution.
+        assert!(market.resolver.is_some());
+        assert!(market.resolved_at.is_some());
+    }
 }
