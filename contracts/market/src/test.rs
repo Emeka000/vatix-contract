@@ -196,6 +196,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         assert_eq!(market_id, 1);
@@ -226,6 +227,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
         assert_eq!(market_id_1, 1);
 
@@ -236,6 +238,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
         assert_eq!(market_id_2, 2);
 
@@ -246,6 +249,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
         assert_eq!(market_id_3, 3);
     }
@@ -267,6 +271,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
     }
 
@@ -286,6 +291,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
     }
 
@@ -309,6 +315,7 @@ mod test {
             &past_end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
     }
 
@@ -328,6 +335,7 @@ mod test {
             &end_time,
             &zero_pubkey,
             &collateral_token,
+            &None,
         );
     }
 
@@ -348,6 +356,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let market = get_market_from_storage(&env, &contract_id, market_id);
@@ -364,10 +373,99 @@ mod test {
         let usdc_token = Address::generate(&env);
 
         let market_id =
-            client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &usdc_token);
+            client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &usdc_token, &None);
 
         let market = get_market_from_storage(&env, &contract_id, market_id);
         assert_eq!(market.collateral_token, usdc_token);
+    }
+
+    #[test]
+    fn test_initialize_market_with_valid_metadata_uri() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Market with metadata");
+        let end_time = env.ledger().timestamp() + 86400;
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let metadata_uri = Some(String::from_str(&env, "ipfs://QmXxx"));
+
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &metadata_uri,
+        );
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.id, market_id);
+    }
+
+    #[test]
+    fn test_initialize_market_with_none_metadata_uri() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Market without metadata");
+        let end_time = env.ledger().timestamp() + 86400;
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let metadata_uri: Option<String> = None;
+
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &metadata_uri,
+        );
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.id, market_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #37)")]
+    fn test_initialize_market_with_empty_metadata_uri_fails() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Market with empty metadata");
+        let end_time = env.ledger().timestamp() + 86400;
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let metadata_uri = Some(String::from_str(&env, ""));
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &metadata_uri,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #37)")]
+    fn test_initialize_market_with_overlong_metadata_uri_fails() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Market with overlong metadata");
+        let end_time = env.ledger().timestamp() + 86400;
+        let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+        let collateral_token = Address::generate(&env);
+        let long_str = "a".repeat(2049);
+        let metadata_uri = Some(String::from_str(&env, &long_str));
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &metadata_uri,
+        );
     }
 
     #[test]
@@ -385,6 +483,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let events = env.events().all();
@@ -423,6 +522,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Manually set market to resolved status
@@ -458,6 +558,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Bad signature must surface as the typed InvalidSignature error
@@ -484,6 +585,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let resolver = Address::generate(&env);
@@ -524,6 +626,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Verify market is initially Active
@@ -559,6 +662,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Verify market is initially Active
@@ -590,6 +694,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Clear events from initialization
@@ -642,6 +747,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Clear events from initialization
@@ -683,6 +789,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Advance ledger past end_time so the market is expired
@@ -727,6 +834,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let user = Address::generate(&env);
@@ -1030,7 +1138,7 @@ mod test {
         let collateral_token = Address::generate(&env);
 
         let market_id =
-            client.initialize_market(&new_admin, &question, &end_time, &oracle_pubkey, &collateral_token);
+            client.initialize_market(&new_admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
         assert_eq!(market_id, 1);
     }
 
@@ -1048,7 +1156,7 @@ mod test {
         let collateral_token = Address::generate(&env);
 
         let result =
-            client.try_initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token);
+            client.try_initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
         assert!(result.is_err());
     }
 
@@ -1254,7 +1362,7 @@ mod test {
         let question = String::from_str(&env, "Will it rain tomorrow?");
         let end_time = env.ledger().timestamp() + 86400;
         let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
-        let market_id = client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token);
+        let market_id = client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
 
         let resolution_addr = env.register(ResolutionContract, ());
         ResolutionContractClient::new(&env, &resolution_addr)
@@ -1335,6 +1443,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let user = Address::generate(&env);
@@ -1852,6 +1961,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         assert_eq!(
