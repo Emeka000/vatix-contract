@@ -183,14 +183,39 @@ impl MarketContract {
         // 2. Require authorization from the admin
         admin.require_auth();
         
-        // 3. Check if already initialized
+        // 3. Check if already initialized.
+        //
+        // `has_admin` is the canonical "already initialized" sentinel — the
+        // same value that `require_initialized` checks — so this guard is
+        // consistent with every other function's initialization check.
+        // A second call to `initialize` after a successful first call always
+        // returns `AlreadyInitialized` (#42), leaving all storage unchanged.
         if storage::has_admin(&env) {
             return Err(ContractError::AlreadyInitialized);
         }
-        
-        // 4. Set admin and version
-        storage::set_admin(&env, &admin);
+
+        // 4. Write version BEFORE writing admin (Issue #548).
+        //
+        // If the transaction is interrupted between the two writes (e.g. an
+        // out-of-gas or host trap), the resulting partial state differs based
+        // on which write completed first:
+        //
+        //   Admin set, version NOT set (old ordering):
+        //     has_admin() == true  →  initialize() returns AlreadyInitialized
+        //     assert_version() returns UpgradeRequired
+        //     Result: contract is permanently bricked — initialization cannot
+        //     be retried, and no storage accessor can be called. The only
+        //     recovery is redeployment.
+        //
+        //   Version set, admin NOT set (new ordering):
+        //     has_admin() == false  →  initialize() can be retried
+        //     assert_version() returns Ok
+        //     All require_initialized guards reject callers in the gap.
+        //     Result: contract is in a recoverable, safe state.
+        //
+        // Writing version first eliminates the bricked state entirely.
         storage::set_version(&env);
+        storage::set_admin(&env, &admin);
         
         // 5. Emit initialization event
         events::emit_contract_initialized(&env, &admin);
