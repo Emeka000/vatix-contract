@@ -26,8 +26,8 @@
 //! |------------------------------------|---------------------------------|
 //! | `initialize`                       | anyone (once)                   |
 //! | `initialize_market` / set_*        | admin                           |
-//! | `deposit_collateral`               | any user                        |
-//! | `update_position`                  | any user (active market)        |
+//! | `deposit_collateral`               | any user (rejected if `closed_to_deposits`) |
+//! | `update_position`                  | any user (active market; rejected if `closed_to_deposits` **and** the trade would increase locked collateral — see `update_position`'s "Closed-to-deposits policy" docs) |
 //! | `withdraw_unused_collateral`       | any user                        |
 //! | `resolve_market` (oracle key)      | anyone (valid signature wins)   |
 //! | `resolve_market` (admin forced)    | admin (when oracle key is zero) |
@@ -69,13 +69,21 @@ mod events;
 pub mod oracle;
 #[cfg(feature = "oracle-adapter")]
 pub mod oracle_adapter;
-#[allow(dead_code)]
+// `positions` is called from `update_position` and `settle_position` inside the
+// `#[contractimpl]` block; the macro expansion hides the call-sites from Clippy's
+// dead-code analysis, so the allow is required to keep CI green.
+#[allow(dead_code)] // used via contractimpl macro expansion (positions::update_position, positions::calculate_locked_collateral)
 mod positions;
-#[allow(dead_code)]
+// `settlement` is called from `settle_position` and `batch_settle_positions` inside
+// the `#[contractimpl]` block; same macro-expansion visibility issue as `positions`.
+#[allow(dead_code)] // used via contractimpl macro expansion (settlement::settle_position, settlement::batch_settle)
 pub mod settlement;
 mod withdraw;
 
-#[allow(dead_code)]
+// `storage` is re-exported as `pub mod` for workspace integration tests and is
+// called throughout the `#[contractimpl]` methods; individual helpers that are
+// only exercised through tests are flagged by Clippy without this allow.
+#[allow(dead_code)] // pub-exported for integration tests; helpers used in contractimpl methods
 pub mod storage;
 mod test;
 #[cfg(test)]
@@ -83,7 +91,10 @@ mod withdraw_fuzz;
 #[cfg(test)]
 mod tests_vectors;
 pub mod types;
-#[allow(dead_code)]
+// `validation` helpers are called from `deposit`, `withdraw`, `positions`, and
+// `oracle` sub-modules; Clippy cannot trace cross-module usages through the
+// `#![no_std]` + macro context and reports the module as dead without this allow.
+#[allow(dead_code)] // called by deposit::deposit_collateral, withdraw::withdraw_unused_collateral, oracle::verify_market_outcome
 mod validation;
 
 use crate::error::ContractError;
@@ -184,14 +195,39 @@ impl MarketContract {
         // 2. Require authorization from the admin
         admin.require_auth();
         
-        // 3. Check if already initialized
+        // 3. Check if already initialized.
+        //
+        // `has_admin` is the canonical "already initialized" sentinel — the
+        // same value that `require_initialized` checks — so this guard is
+        // consistent with every other function's initialization check.
+        // A second call to `initialize` after a successful first call always
+        // returns `AlreadyInitialized` (#42), leaving all storage unchanged.
         if storage::has_admin(&env) {
             return Err(ContractError::AlreadyInitialized);
         }
-        
-        // 4. Set admin and version
-        storage::set_admin(&env, &admin);
+
+        // 4. Write version BEFORE writing admin (Issue #548).
+        //
+        // If the transaction is interrupted between the two writes (e.g. an
+        // out-of-gas or host trap), the resulting partial state differs based
+        // on which write completed first:
+        //
+        //   Admin set, version NOT set (old ordering):
+        //     has_admin() == true  →  initialize() returns AlreadyInitialized
+        //     assert_version() returns UpgradeRequired
+        //     Result: contract is permanently bricked — initialization cannot
+        //     be retried, and no storage accessor can be called. The only
+        //     recovery is redeployment.
+        //
+        //   Version set, admin NOT set (new ordering):
+        //     has_admin() == false  →  initialize() can be retried
+        //     assert_version() returns Ok
+        //     All require_initialized guards reject callers in the gap.
+        //     Result: contract is in a recoverable, safe state.
+        //
+        // Writing version first eliminates the bricked state entirely.
         storage::set_version(&env);
+        storage::set_admin(&env, &admin);
         
         // 5. Emit initialization event
         events::emit_contract_initialized(&env, &admin);
@@ -417,6 +453,10 @@ impl MarketContract {
     /// * `market_id` - Market to resolve (decimal string, e.g. "1")
     /// * `outcome` - Outcome (true = YES won, false = NO won)
     /// * `signature` - Oracle's Ed25519 signature (64 bytes)
+    /// * `expires_at` - Unix timestamp deadline after which this signed message
+    ///   is no longer valid. Pass `0` to disable expiry enforcement (backwards
+    ///   compatible with callers that do not supply a deadline). A non-zero
+    ///   value that is in the past returns [`ContractError::OracleMessageExpired`].
     ///
     /// # Returns
     /// Unit (success)
@@ -424,6 +464,7 @@ impl MarketContract {
     /// # Errors
     /// - MarketNotFound
     /// - MarketAlreadyResolved
+    /// - OracleMessageExpired: The oracle message deadline has passed
     /// - InvalidSignature: Signature verification failed
     /// - UnauthorizedOracle: Wrong oracle pubkey
     ///
@@ -435,6 +476,7 @@ impl MarketContract {
         market_id: String,
         outcome: bool,
         signature: BytesN<64>,
+        expires_at: u64,
     ) -> Result<(), ContractError> {
         validation::require_not_paused(&env)?;
         resolver.require_auth();
@@ -446,7 +488,16 @@ impl MarketContract {
             return Err(ContractError::MarketAlreadyResolved);
         }
 
-        // Step 1.5: When a resolution contract is registered for this
+        // Step 1.5 (expiry): Reject stale oracle messages. A non-zero
+        // `expires_at` that is strictly less than the current ledger timestamp
+        // means the signed payload has outlived its intended window and must
+        // not be applied — prevents long-lived signatures being replayed weeks
+        // or months after they were originally produced.
+        if expires_at != 0 && env.ledger().timestamp() > expires_at {
+            return Err(ContractError::OracleMessageExpired);
+        }
+
+        // Step 1.6: When a resolution contract is registered for this
         // contract (see `set_resolution_contract`), resolve_market may only
         // be reached once that contract has finalized a matching candidate
         // — i.e. its challenge-window lifecycle has run to completion. This
@@ -652,44 +703,62 @@ impl MarketContract {
         Ok(())
     }
 
-    /// Void a market whose on-chain dispute-resolution process reached a
-    /// terminal, unresolvable state (the registered resolution contract
-    /// exhausted its max appeal rounds with no safely-attestable outcome).
+    /// Explicitly reopen a previously canceled market, restoring it to Active.
     ///
-    /// This is the counterpart to the `require_resolution_finalized` gate on
-    /// `resolve_market`: just as that gate lets only the registered
-    /// resolution contract's `finalize` unlock a normal resolution, this
-    /// entrypoint lets only that same contract force a market out of a
-    /// stuck dispute, without needing to impersonate the market's admin.
-    /// Behaves identically to `cancel_market` from the market's perspective
-    /// (`Active` → `Canceled`, collateral reclaimable via
-    /// `withdraw_canceled_collateral`) but is authorized by the resolution
-    /// contract rather than the admin.
+    /// This is the **only** sanctioned path from `Canceled` back to `Active`.
+    /// All other entry points that mutate market state either require `Active`
+    /// as a precondition or transition to `Resolved`/`Canceled` — never back
+    /// to `Active`. Calling [`reopen_market`] on a market that is already
+    /// `Active` or `Resolved` is rejected; only `Canceled` markets may be
+    /// reopened.
+    ///
+    /// # When to use
+    /// Use this when a market was canceled prematurely (e.g. an admin error)
+    /// and the admin wants to restore it to its original trading state. Users
+    /// who already reclaimed collateral via [`withdraw_canceled_collateral`]
+    /// will need to re-deposit if they wish to resume trading.
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `admin` - Must be the stored admin address (authorizes the call)
+    /// * `market_id` - Identifier of the canceled market to reopen
     ///
     /// # Errors
-    /// - [`ContractError::NotAdmin`] – no resolution contract is registered,
-    ///   or `caller` is not the registered resolution contract
+    /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin
     /// - [`ContractError::MarketNotFound`] – the market does not exist
-    /// - [`ContractError::MarketAlreadyResolved`] – the market is already resolved
-    /// - [`ContractError::MarketNotActive`] – the market is already canceled
-    pub fn void_market(env: Env, caller: Address, market_id: u32) -> Result<(), ContractError> {
+    /// - [`ContractError::MarketAlreadyResolved`] – the market is resolved; resolved
+    ///   markets are terminal and can never return to Active
+    /// - [`ContractError::MarketNotActive`] – the market is already Active; calling
+    ///   reopen on an Active market is a no-op and is rejected to surface bugs
+    ///
+    /// # Events
+    /// Emits [`MarketReopened`] with `market_id`, `admin`, and `reopened_at`.
+    pub fn reopen_market(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+    ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
         validation::require_not_paused(&env)?;
-        caller.require_auth();
-        let resolution_contract =
-            storage::get_resolution_contract(&env).ok_or(ContractError::NotAdmin)?;
-        if caller != resolution_contract {
+
+        // 1. Authorization: only the stored admin may reopen a market.
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
 
+        // 2. Load the market and enforce the reopen policy (Canceled only).
         let mut market =
             storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
-        validation::validate_cancelable(&market.status)?;
+        validation::validate_reopenable(&market.status)?;
 
-        market.status = MarketStatus::Canceled;
+        // 3. Transition back to Active and persist.
+        market.status = MarketStatus::Active;
         storage::set_market(&env, market_id, &market)?;
 
-        events::emit_market_canceled(&env, market_id, &caller, env.ledger().timestamp());
+        // 4. Emit the reopen event for off-chain indexers.
+        events::emit_market_reopened(&env, market_id, &admin, env.ledger().timestamp());
 
         Ok(())
     }
@@ -808,6 +877,11 @@ impl MarketContract {
     ///   `tests/canceled_market_guard_test.rs` for coverage of this path.
     /// - [`ContractError::MarketExpired`] – current time exceeds market `end_time`
     /// - [`ContractError::InvalidPrice`] – `market_price` is outside valid range (0–10_000)
+    /// - [`ContractError::MarketClosedToDeposits`] – the market was closed via
+    ///   [`close_market_to_deposits`] and this call would increase locked
+    ///   collateral (open new exposure). Trades that keep the lock flat or
+    ///   reduce it (selling / closing out a position) are unaffected — only
+    ///   new exposure is blocked. See `# Closed-to-deposits policy` below.
     /// - [`ContractError::InsufficientCollateral`] – deposited collateral insufficient
     ///   to cover the increased locked amount
     /// - [`ContractError::InvalidShareAmount`] – deltas would result in negative share balance
@@ -839,10 +913,21 @@ impl MarketContract {
     /// );
     /// ```
     ///
+    /// # Closed-to-deposits policy
+    /// [`close_market_to_deposits`] blocks [`deposit_collateral`] outright, and
+    /// also blocks `update_position` calls that would *increase* locked
+    /// collateral (opening a new position or growing an existing one) — this
+    /// is the "no last-minute position changes" use case the admin flag is
+    /// for. Calls that keep the lock flat or reduce it (selling shares,
+    /// closing out part or all of a position) remain unaffected, since they
+    /// shed risk rather than add it and require no new deposit. Withdrawals
+    /// and settlement are never affected by `closed_to_deposits`.
+    ///
     /// # Security
     /// - Requires user authorization via `user.require_auth()`
     /// - Validates market is Active and not expired
     /// - Enforces collateral requirements before state changes
+    /// - Blocks new exposure once the market is closed to deposits
     /// - Prevents negative share balances
     /// - All state changes are atomic (succeed or revert together)
     pub fn update_position(
@@ -869,9 +954,15 @@ impl MarketContract {
         // 3. Validate the market price up front for a clear ContractError
         validation::validate_market_price(market_price)?;
 
-        // 4. Enforce that deposited collateral covers any increase in the lock.
-        //    Negative-share deltas are left for positions::update_position to
-        //    reject (it also emits a PositionLimitExceeded event).
+        // 4. Enforce that deposited collateral covers any increase in the lock,
+        //    and that a market closed to deposits cannot be used to open new
+        //    exposure. Trades that keep the lock flat or reduce it (selling /
+        //    closing out an existing position) are always allowed, even when
+        //    closed_to_deposits is set, since they reduce risk rather than add
+        //    it — only opening/increasing a position is "last-minute" new
+        //    exposure. Negative-share deltas are left for
+        //    positions::update_position to reject (it also emits a
+        //    PositionLimitExceeded event).
         let existing_position = storage::get_position(&env, market_id, &user)?;
         let position = existing_position
             .clone()
@@ -882,6 +973,9 @@ impl MarketContract {
             let prospective_locked =
                 positions::calculate_locked_collateral(new_yes, new_no, market_price);
             let lock_increased = prospective_locked > position.locked_collateral;
+            if lock_increased && market.closed_to_deposits {
+                return Err(ContractError::MarketClosedToDeposits);
+            }
             if lock_increased && prospective_locked > position.total_deposited {
                 return Err(ContractError::InsufficientCollateral);
             }
@@ -1091,6 +1185,14 @@ impl MarketContract {
     ///   time in [`Self::set_fee_rate`]) so a cap lowered by the admin while a
     ///   change is in flight cannot let a stale, now-excessive rate through.
     pub fn execute_fee_rate_change(env: Env) -> Result<i128, ContractError> {
+        // Guard: contract must be fully initialized before a pending fee-rate
+        // change can be applied (Issue #547). Without this check a caller could
+        // invoke execute_fee_rate_change on a contract where the admin has not
+        // yet been set, writing FeeRateBps storage before initialization is
+        // complete and leaving the contract in an inconsistent state.
+        // This is the same guard used by every other state-mutating entry point.
+        validation::require_initialized(&env)?;
+
         let pending = storage::get_pending_fee_rate_change(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
         if env.ledger().timestamp() < pending.effective_at {
@@ -1140,10 +1242,14 @@ impl MarketContract {
     /// Waived addresses pay no withdrawal fee regardless of the configured
     /// [`set_fee_rate`]. Adding an address that is already waived is a no-op.
     ///
-    /// Only the stored admin may call this.
+    /// Only the stored admin may call this. `account` must be an ordinary
+    /// user account: contract addresses are rejected, and the admin cannot
+    /// waive itself (#584) — see [`validation::validate_fee_waiver_account`].
     ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::InvalidFeeWaiverAccount`] — `account` is a contract
+    ///   address or equals the admin.
     pub fn add_fee_waiver(
         env: Env,
         admin: Address,
@@ -1155,6 +1261,7 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
+        validation::validate_fee_waiver_account(&account, &stored_admin)?;
         storage::add_fee_waiver(&env, &account);
         events::emit_fee_waiver_added(&env, &account, &admin);
         Ok(())
@@ -1270,6 +1377,10 @@ impl MarketContract {
     /// disables threshold resolution.
     ///
     /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidThresholdQuorum`] — `quorum` exceeds
+    ///   `signers.len()`; such a quorum could never be satisfied.
     pub fn set_threshold_signers(
         env: Env,
         admin: Address,
@@ -1281,6 +1392,9 @@ impl MarketContract {
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
+        }
+        if quorum > signers.len() {
+            return Err(ContractError::InvalidThresholdQuorum);
         }
         storage::set_threshold_signers(&env, &signers);
         storage::set_threshold_quorum(&env, quorum);
@@ -1735,13 +1849,22 @@ impl MarketContract {
         Ok(result)
     }
 
-    /// Prevent new collateral deposits into a market while preserving all
-    /// other functionality (trading, withdrawals, and settlement).
+    /// Prevent new collateral deposits into a market, and block
+    /// [`update_position`] calls that would open new exposure, while
+    /// preserving withdrawals and settlement.
     ///
-    /// Once closed, any call to [`deposit_collateral`] for this market will
-    /// return [`ContractError::MarketClosedToDeposits`]. The flag is
-    /// idempotent — calling this on an already-closed market is a no-op and
-    /// succeeds without error.
+    /// Once closed:
+    /// - Any call to [`deposit_collateral`] for this market returns
+    ///   [`ContractError::MarketClosedToDeposits`].
+    /// - Any call to [`update_position`] that would *increase* a user's
+    ///   locked collateral (opening or growing a position) also returns
+    ///   [`ContractError::MarketClosedToDeposits`]. Trades that keep the lock
+    ///   flat or reduce it (selling shares, closing out a position) still
+    ///   succeed, since they shed risk rather than add it.
+    /// - [`withdraw_unused_collateral`] and settlement are unaffected.
+    ///
+    /// The flag is idempotent — calling this on an already-closed market is a
+    /// no-op and succeeds without error.
     ///
     /// # Use cases
     /// - Lock down a market approaching its expiry to prevent last-minute
@@ -1759,7 +1882,7 @@ impl MarketContract {
     /// - [`ContractError::MarketNotFound`] – no market with `market_id` exists
     ///
     /// # Events
-    /// Emits [`events::MarketClosedToDepositsEvent`] with `market_id`,
+    /// Emits [`events::MarketClosedToDeposits`] with `market_id`,
     /// `admin`, and `closed_at` timestamp so off-chain indexers can track
     /// when a market was locked.
     pub fn close_market_to_deposits(

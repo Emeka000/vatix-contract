@@ -88,7 +88,12 @@ export function PositionPanel({ marketId }: PositionPanelProps) {
         <div ref={depositFormRef}>
           <DepositForm marketId={marketId} />
         </div>
-        <WithdrawForm />
+        {/*
+         * Pass `refresh` as `onSuccess` so the position panel refetches
+         * on-chain state immediately after a successful withdrawal, keeping
+         * the UI in sync without a full page reload (#591).
+         */}
+        <WithdrawForm onSuccess={refresh} />
       </div>
 
       <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700 sm:p-6">

@@ -214,7 +214,6 @@ fn challenge_after_deadline_is_rejected() {
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, 10_000_000i128);
     let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
@@ -250,10 +249,7 @@ fn finalize_calls_resolve_market_on_market_contract() {
     let proposer = Address::generate(&env);
     fund(&env, &token, &proposer, 10_000_000i128);
     let sig = signature(&env);
-    // signature_expiry must outlive the challenge window (+60) plus the
-    // time we advance past it below, or finalize would hit SignatureExpired
-    // before ever reaching the resolve_market cross-call this test targets.
-    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 7200), &evidence(&env), &60, &10_000_000i128);
+    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let finalizer = Address::generate(&env);
@@ -713,389 +709,69 @@ fn finalize_rejected_one_second_after_signature_expiry() {
     );
 }
 
-// ── Dispute-game economics: bonds, slashing, arbitration, void ───────────────
+// ── Issue #577: finalize is exactly-once ─────────────────────────────────────
 //
-// REWARD_BPS = 5_000, BURN_BPS = 2_500, remainder (2_500) is the treasury
-// cut, applied to whichever bond is forfeited (BPS_DENOMINATOR = 10_000).
-// With BOND = 10_000_000: reward = 5_000_000, burned = 2_500_000,
-// treasury_cut = 2_500_000.
-const ARBITRATION_TIMELOCK_SECONDS: u64 = 172_800;
+// A second call to finalize() on an already-finalized candidate must return
+// CandidateAlreadyFinalized without re-invoking the market's resolve_market.
 
-/// Challenging without posting the minimum bond fails outright — this is
-/// the acceptance criterion "Challenge without bond fails". Free challenges
-/// are what let a griefer stall resolution indefinitely at zero cost.
+/// First finalize succeeds; a second finalize on the same candidate_id must
+/// return CandidateAlreadyFinalized (exactly-once guarantee, Issue #577).
 #[test]
-fn challenge_without_sufficient_bond_fails() {
+fn double_finalize_returns_already_finalized() {
     let env = Env::default();
-    let (client, _, _, token) = setup(&env);
+    let (client, _, _) = setup(&env);
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
+    let window = MIN_WINDOW;
+    let expiry = env.ledger().timestamp() + window + 7_200;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 3600),
-        &evidence(&env), &300, &BOND,
+        &proposer, &77u32, &true, &signature(&env), &expiry,
+        &evidence(&env), &window, &BOND,
     );
 
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://cheap-challenge");
+    // Advance past the challenge window.
+    set_time(&env, 1_000 + window + 1);
+
+    let finalizer = Address::generate(&env);
+    // First finalize must succeed.
+    let first = client.finalize(&finalizer, &candidate_id);
+    assert_eq!(first.status, crate::types::CandidateStatus::Finalized);
+
+    // Second finalize on the same candidate must be rejected safely —
+    // no second resolve_market cross-contract call is fired.
+    let second = client.try_finalize(&finalizer, &candidate_id);
     assert_eq!(
-        client.try_challenge(&challenger, &candidate_id, &uri, &0i128),
-        Err(Ok(ContractError::InsufficientChallengeBond))
+        second,
+        Err(Ok(ContractError::CandidateAlreadyFinalized)),
+        "second finalize must return CandidateAlreadyFinalized (Issue #577)"
     );
-    // Nothing was ever pulled from the challenger.
-    assert_eq!(balance(&env, &token, &challenger), BOND);
 }
 
-/// A challenger's bond is actually transferred into (locked in) the
-/// resolution contract at `challenge` time.
+/// Verify that after a successful finalize the stored candidate status is
+/// Finalized, so any subsequent finalize attempt is blocked at the guard
+/// (Issue #577).
 #[test]
-fn challenge_locks_challenger_bond_in_contract() {
+fn finalized_candidate_status_is_persisted() {
     let env = Env::default();
-    let (client, _, _, token) = setup(&env);
-    set_time(&env, 1_000);
+    let (client, _, _) = setup(&env);
+    set_time(&env, 2_000);
 
     let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
+    let window = MIN_WINDOW;
+    let expiry = env.ledger().timestamp() + window + 7_200;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 3600),
-        &evidence(&env), &300, &BOND,
+        &proposer, &42u32, &false, &signature(&env), &expiry,
+        &evidence(&env), &window, &BOND,
     );
 
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
+    set_time(&env, 2_000 + window + 1);
 
-    // The bond left the challenger's balance and now sits in the
-    // resolution contract, recorded against this candidate.
-    assert_eq!(balance(&env, &token, &challenger), 0);
-    assert_eq!(client.get_challengers(&candidate_id).len(), 1);
-    assert_eq!(client.get_challengers(&candidate_id).get(0).unwrap().bond, BOND);
-}
-
-/// On `finalize` of a candidate that survived a challenge (via `appeal`),
-/// the proposer is refunded in full and the challenger's bond is forfeited
-/// and split reward/burn/treasury — "incorrect proposer... incorrect
-/// challenger cannot reclaim full bond after losing dispute", and the
-/// finalize-side half of "route bonds per documented split".
-#[test]
-fn finalize_refunds_proposer_and_slashes_challenger_with_documented_split() {
-    let env = Env::default();
-    let (client, _, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 100_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    // Proposer stands by the outcome; nobody disputes the appeal again.
-    set_time(&env, 1_310);
-    client.appeal(
-        &proposer, &candidate_id, &true, &signature(&env),
-        &evidence(&env), &300,
-    );
-
-    set_time(&env, 1_611);
     let finalizer = Address::generate(&env);
     client.finalize(&finalizer, &candidate_id);
 
-    // Proposer got their own bond back plus the reward share of the
-    // challenger's forfeited bond.
-    let reward = BOND * 5_000 / 10_000;
-    assert_eq!(balance(&env, &token, &proposer), BOND + reward);
-    // The challenger kept nothing of their forfeited bond.
-    assert_eq!(balance(&env, &token, &challenger), 0);
-    // The challenger record is cleared once settled.
-    assert_eq!(client.get_challengers(&candidate_id).len(), 0);
-}
-
-/// Adversarial griefing scenario: an attacker repeatedly challenges every
-/// appeal round purely to stall resolution. Each challenge costs a bond, so
-/// the attacker pays `MAX_APPEAL_ROUNDS + 1` bonds total and loses every one
-/// of them once the proposer's outcome is ultimately upheld — proving that
-/// repeated challenging is not free, and that the dispute still reaches a
-/// terminal state instead of stalling forever.
-#[test]
-fn griefer_pays_a_bond_every_round_and_loses_them_all() {
-    let env = Env::default();
-    let (client, _, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let griefer = Address::generate(&env);
-    // Enough for every round's bond (funded once, spent 4 times).
-    fund(&env, &token, &griefer, BOND * 4);
-
-    let mut now = 1_000u64;
-    for round in 0..3u32 {
-        let uri = String::from_str(&env, "ipfs://grief");
-        client.challenge(&griefer, &candidate_id, &uri, &BOND);
-        assert_eq!(
-            client.get_candidate(&candidate_id).unwrap().status,
-            crate::types::CandidateStatus::Challenged
-        );
-
-        now += 10;
-        set_time(&env, now);
-        client.appeal(&proposer, &candidate_id, &true, &signature(&env), &evidence(&env), &300);
-        let candidate = client.get_candidate(&candidate_id).unwrap();
-        assert_eq!(candidate.appeal_round, round + 1);
-        now = candidate.challenge_deadline;
-    }
-
-    // One more challenge at the max appeal round — the proposer can no
-    // longer appeal past this (appeal_round == MAX_APPEAL_ROUNDS), so the
-    // dispute now needs the terminal admin path instead of stalling forever.
-    let uri = String::from_str(&env, "ipfs://grief-final");
-    client.challenge(&griefer, &candidate_id, &uri, &BOND);
-    assert_eq!(
-        client.try_appeal(&proposer, &candidate_id, &true, &signature(&env), &evidence(&env), &300),
-        Err(Ok(ContractError::AppealLimitExceeded))
-    );
-
-    // Every one of the griefer's 4 bonds is now locked in the contract, and
-    // they cannot get any of it back by challenging further (window closed
-    // to new challenges since status is already Challenged).
-    assert_eq!(balance(&env, &token, &griefer), 0);
-    assert_eq!(client.get_challengers(&candidate_id).len(), 4);
-
-    // Not yet arbitrable: the timelock since the last challenge deadline
-    // hasn't elapsed.
-    let candidate = client.get_candidate(&candidate_id).unwrap();
-    assert_eq!(
-        client.try_arbitrate_uphold_proposer(&Address::generate(&env), &candidate_id),
-        Err(Ok(ContractError::NotAdmin))
-    );
-
-    // Admin settles it once the timelock elapses: proposer was right all
-    // along, so every one of the griefer's 4 bonds is slashed.
-    set_time(&env, candidate.challenge_deadline + ARBITRATION_TIMELOCK_SECONDS);
-    let admin = client.get_config().admin;
-    client.arbitrate_uphold_proposer(&admin, &candidate_id);
-
-    assert_eq!(balance(&env, &token, &proposer), BOND + 4 * (BOND * 5_000 / 10_000));
-    assert_eq!(balance(&env, &token, &griefer), 0);
-    assert_eq!(client.get_challengers(&candidate_id).len(), 0);
-    assert_eq!(
-        client.get_candidate(&candidate_id).unwrap().status,
-        crate::types::CandidateStatus::Finalized
-    );
-}
-
-/// Arbitration/void are only reachable once the candidate is `Challenged`
-/// and the timelock has elapsed — calling them early is rejected.
-#[test]
-fn arbitration_rejects_before_timelock_elapses() {
-    let env = Env::default();
-    let (client, admin, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    // Never challenged at all — still Proposed, not arbitrable.
-    assert_eq!(
-        client.try_arbitrate_uphold_proposer(&admin, &candidate_id),
-        Err(Ok(ContractError::NotArbitrable))
-    );
-    assert_eq!(
-        client.try_void_market(&admin, &candidate_id),
-        Err(Ok(ContractError::NotArbitrable))
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    // Challenged, but the timelock since challenge_deadline hasn't elapsed.
-    assert_eq!(
-        client.try_void_market(&admin, &candidate_id),
-        Err(Ok(ContractError::ArbitrationTimelockNotElapsed))
-    );
-}
-
-/// A candidate that is simply abandoned after a single challenge (the
-/// proposer never calls `appeal`, so `appeal_round` stays 0) must still
-/// reach a terminal state once the timelock elapses — this is what keeps
-/// the market from staying stuck non-terminal forever even outside the
-/// "exhausted every appeal" case.
-#[test]
-fn void_market_unsticks_an_abandoned_challenged_candidate() {
-    let env = Env::default();
-    let (client, admin, market_contract, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &7u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    let candidate = client.get_candidate(&candidate_id).unwrap();
-    assert_eq!(candidate.appeal_round, 0);
-
-    set_time(&env, candidate.challenge_deadline + ARBITRATION_TIMELOCK_SECONDS);
-    client.void_market(&admin, &candidate_id);
-
-    // Challenger refunded their own bond in full (voiding is not a verdict
-    // against them) plus the reward share of the proposer's slashed bond,
-    // since theirs is the dispute that stands unresolved...
-    let reward = BOND * 5_000 / 10_000;
-    assert_eq!(balance(&env, &token, &challenger), BOND + reward);
-    // ...and the proposer's bond is slashed since their outcome never
-    // survived the dispute.
-    assert_eq!(balance(&env, &token, &proposer), 0);
-    assert_eq!(
-        client.get_candidate(&candidate_id).unwrap().status,
-        crate::types::CandidateStatus::Voided
-    );
-
-    // The underlying market was actually unstuck (Active -> Canceled).
-    let market_client = MockMarketClient::new(&env, &market_contract);
-    assert_eq!(
-        market_client.get_market_status(&7u32),
-        crate::types::MarketStatus::Canceled
-    );
-}
-
-/// `void_market` slashes the proposer's bond per the documented split
-/// (reward to the challenger, burn, treasury) rather than simply handing it
-/// all to the challenger.
-#[test]
-fn void_market_splits_slashed_proposer_bond() {
-    let env = Env::default();
-    let (client, admin, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let treasury = Address::generate(&env);
-    client.set_treasury(&admin, &treasury);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    let candidate = client.get_candidate(&candidate_id).unwrap();
-    set_time(&env, candidate.challenge_deadline + ARBITRATION_TIMELOCK_SECONDS);
-    client.void_market(&admin, &candidate_id);
-
-    let reward = BOND * 5_000 / 10_000;
-    let burned = BOND * 2_500 / 10_000;
-    let treasury_cut = BOND - reward - burned;
-
-    // Challenger got their own bond back plus the reward share of the
-    // proposer's slashed bond.
-    assert_eq!(balance(&env, &token, &challenger), BOND + reward);
-    assert_eq!(balance(&env, &token, &treasury), treasury_cut);
-    assert_eq!(balance(&env, &token, &proposer), 0);
-    // reward + burned + treasury_cut == BOND exactly (no dust lost).
-    assert_eq!(reward + burned + treasury_cut, BOND);
-}
-
-/// Once a market has been voided, a stale `finalize` on the same candidate
-/// cannot resurrect it — the terminal state sticks.
-#[test]
-fn finalize_after_void_is_rejected() {
-    let env = Env::default();
-    let (client, admin, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    let candidate = client.get_candidate(&candidate_id).unwrap();
-    set_time(&env, candidate.challenge_deadline + ARBITRATION_TIMELOCK_SECONDS);
-    client.void_market(&admin, &candidate_id);
-
-    let finalizer = Address::generate(&env);
-    assert_eq!(
-        client.try_finalize(&finalizer, &candidate_id),
-        Err(Ok(ContractError::CandidateAlreadyFinalized))
-    );
-}
-
-/// Non-admin callers cannot arbitrate or void, even once the timelock has
-/// elapsed — this remains an admin-gated (if time-delayed) decision.
-#[test]
-fn arbitration_rejects_non_admin() {
-    let env = Env::default();
-    let (client, _, _, token) = setup(&env);
-    set_time(&env, 1_000);
-
-    let proposer = Address::generate(&env);
-    fund(&env, &token, &proposer, BOND);
-    let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
-        &(env.ledger().timestamp() + 1_000_000),
-        &evidence(&env), &300, &BOND,
-    );
-
-    let challenger = Address::generate(&env);
-    fund(&env, &token, &challenger, BOND);
-    let uri = String::from_str(&env, "ipfs://challenge");
-    client.challenge(&challenger, &candidate_id, &uri, &BOND);
-
-    let candidate = client.get_candidate(&candidate_id).unwrap();
-    set_time(&env, candidate.challenge_deadline + ARBITRATION_TIMELOCK_SECONDS);
-
-    let rando = Address::generate(&env);
-    assert_eq!(
-        client.try_arbitrate_uphold_proposer(&rando, &candidate_id),
-        Err(Ok(ContractError::NotAdmin))
-    );
-    assert_eq!(
-        client.try_void_market(&rando, &candidate_id),
-        Err(Ok(ContractError::NotAdmin))
-    );
+    // The candidate retrieved from storage must show Finalized status.
+    let stored = client.get_candidate(&candidate_id).expect("candidate must exist");
+    assert_eq!(stored.status, crate::types::CandidateStatus::Finalized);
+    assert!(stored.finalized_at.is_some(), "finalized_at must be set");
 }

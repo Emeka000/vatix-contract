@@ -200,6 +200,35 @@ pub fn validate_cancelable(status: &MarketStatus) -> Result<(), ContractError> {
     }
 }
 
+/// Validates that a market may be explicitly reopened by the admin.
+///
+/// Only a [`MarketStatus::Canceled`] market may be reopened. A resolved market
+/// has a final outcome and can never go back to Active. Calling this on an
+/// already-Active market is rejected as a redundant no-op to surface caller bugs.
+///
+/// This guard is the single enforcement point for the `Canceled → Active`
+/// transition so that no other code path can accidentally reopen a market.
+///
+/// # Arguments
+/// * `status` - Current [`MarketStatus`] of the market being reopened
+///
+/// # Returns
+/// `Ok(())` when the market is [`MarketStatus::Canceled`] and can be reopened.
+///
+/// # Errors
+/// - [`ContractError::MarketAlreadyResolved`] – a resolved market is terminal;
+///   it can never return to Active status.
+/// - [`ContractError::MarketNotActive`] – the market is already Active, so
+///   the reopen is a no-op and is rejected to surface the redundant call
+///   (reuses `MarketNotActive` meaning "wrong status for this operation").
+pub fn validate_reopenable(status: &MarketStatus) -> Result<(), ContractError> {
+    match status {
+        MarketStatus::Canceled => Ok(()),
+        MarketStatus::Resolved => Err(ContractError::MarketAlreadyResolved),
+        MarketStatus::Active => Err(ContractError::MarketNotActive),
+    }
+}
+
 /// Parse a decimal market_id string to u32 (e.g. "1", "42").
 /// Returns InvalidQuantity if empty, non-digit, or overflow.
 pub fn parse_market_id(market_id: &String) -> Result<u32, ContractError> {
@@ -305,6 +334,29 @@ pub fn validate_admin_address(admin: &Address) -> Result<(), ContractError> {
     // `None` for regular user accounts. We reject contract addresses as admin.
     if admin.executable().is_some() {
         return Err(ContractError::InvalidAdmin);
+    }
+    Ok(())
+}
+
+/// Validate that `account` is eligible for the admin-managed fee waiver list (#584).
+///
+/// Two misuse cases are rejected:
+/// - `account` is a contract address (mirrors [`validate_admin_address`]) —
+///   the waiver list is meant for real depositors, not contracts.
+/// - `account` is the current `admin` — the admin already controls the fee
+///   rate via [`crate::MarketContract::set_fee_rate`], so allowing self-waiver
+///   would let it silently exempt itself from the fees it sets for everyone
+///   else.
+///
+/// # Errors
+/// - [`ContractError::InvalidFeeWaiverAccount`] – `account` is a contract
+///   address or equals `admin`.
+pub fn validate_fee_waiver_account(
+    account: &Address,
+    admin: &Address,
+) -> Result<(), ContractError> {
+    if account.executable().is_some() || account == admin {
+        return Err(ContractError::InvalidFeeWaiverAccount);
     }
     Ok(())
 }
@@ -566,6 +618,35 @@ mod tests {
         assert_eq!(
             validate_admin_address(&contract_id),
             Err(ContractError::InvalidAdmin)
+        );
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_user_ok() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        let account = Address::generate(&env);
+        assert!(validate_fee_waiver_account(&account, &admin).is_ok());
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_contract_fails() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(crate::MarketContract, ());
+        assert_eq!(
+            validate_fee_waiver_account(&contract_id, &admin),
+            Err(ContractError::InvalidFeeWaiverAccount)
+        );
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_self_waiver_fails() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        assert_eq!(
+            validate_fee_waiver_account(&admin, &admin),
+            Err(ContractError::InvalidFeeWaiverAccount)
         );
     }
 
