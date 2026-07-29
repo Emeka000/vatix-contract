@@ -12,6 +12,7 @@ Cargo.lock
 .idea/
 *.swp
 *.swo
+*.orig
 
 # OS
 .DS_Store
@@ -21,9 +22,21 @@ Thumbs.db
 *.so
 *.dylib
 *.dll
+*.wasm.gz
 
-contracts/*/test_snapshots
+# Test snapshots (Soroban SDK generates these under test runs)
+contracts/*/test_snapshots/
 /test_snapshots/
+**/__snapshots__/
+**/*.snap
+**/*.snap.new
+
+# Coverage reports
+lcov.info
+coverage/
+tarpaulin-report.html
+tarpaulin-report.json
+cobertura.xml
 
 # Node / Next.js
 node_modules/
@@ -32,6 +45,13 @@ apps/web/.next/
 apps/web/out/
 dist/
 apps/web/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+!.env.local.example
 
 # Generated issue exports (regenerate with pnpm issues:generate)
 scripts/issues/generated/
