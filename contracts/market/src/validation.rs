@@ -200,6 +200,35 @@ pub fn validate_cancelable(status: &MarketStatus) -> Result<(), ContractError> {
     }
 }
 
+/// Validates that a market may be explicitly reopened by the admin.
+///
+/// Only a [`MarketStatus::Canceled`] market may be reopened. A resolved market
+/// has a final outcome and can never go back to Active. Calling this on an
+/// already-Active market is rejected as a redundant no-op to surface caller bugs.
+///
+/// This guard is the single enforcement point for the `Canceled → Active`
+/// transition so that no other code path can accidentally reopen a market.
+///
+/// # Arguments
+/// * `status` - Current [`MarketStatus`] of the market being reopened
+///
+/// # Returns
+/// `Ok(())` when the market is [`MarketStatus::Canceled`] and can be reopened.
+///
+/// # Errors
+/// - [`ContractError::MarketAlreadyResolved`] – a resolved market is terminal;
+///   it can never return to Active status.
+/// - [`ContractError::MarketNotActive`] – the market is already Active, so
+///   the reopen is a no-op and is rejected to surface the redundant call
+///   (reuses `MarketNotActive` meaning "wrong status for this operation").
+pub fn validate_reopenable(status: &MarketStatus) -> Result<(), ContractError> {
+    match status {
+        MarketStatus::Canceled => Ok(()),
+        MarketStatus::Resolved => Err(ContractError::MarketAlreadyResolved),
+        MarketStatus::Active => Err(ContractError::MarketNotActive),
+    }
+}
+
 /// Parse a decimal market_id string to u32 (e.g. "1", "42").
 /// Returns InvalidQuantity if empty, non-digit, or overflow.
 pub fn parse_market_id(market_id: &String) -> Result<u32, ContractError> {

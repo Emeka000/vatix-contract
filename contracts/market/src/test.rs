@@ -546,7 +546,7 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
 
-        client.resolve_market(&resolver, &non_existent_market_id, &outcome, &invalid_signature);
+        client.resolve_market(&resolver, &non_existent_market_id, &outcome, &invalid_signature, &0u64);
     }
 
     #[test]
@@ -582,7 +582,7 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature);
+        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
     }
 
     #[test]
@@ -611,7 +611,7 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::random(&env);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature);
+        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::random(&env);
         let market_id_str = String::from_str(&env, "1");
-        let result = client.try_resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature);
+        let result = client.try_resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
 
         assert_eq!(
             result,
@@ -681,7 +681,7 @@ mod test {
         // Resolve market with valid signature
         let resolver = Address::generate(&env);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &signature);
+        client.resolve_market(&resolver, &market_id_str, &outcome, &signature, &0u64);
 
         // Verify market is now Resolved
         let market_after = get_market_from_storage(&env, &contract_id, market_id);
@@ -747,7 +747,7 @@ mod test {
         // Resolve market with valid signature
         let resolver = Address::generate(&env);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &signature);
+        client.resolve_market(&resolver, &market_id_str, &outcome, &signature, &0u64);
 
         // Verify event was emitted
         let events = env.events().all();
@@ -758,6 +758,188 @@ mod test {
         assert_eq!(market.status, MarketStatus::Resolved);
         assert_eq!(market.result, Some(outcome));
         assert_eq!(market.resolver, Some(resolver));
+    }
+
+    // ── #592: resolve_market rejects expired oracle messages ──────────────────
+
+    /// An oracle message with `expires_at` in the past must be rejected with
+    /// `OracleMessageExpired` (#24) so stale signatures cannot be replayed.
+    #[test]
+    fn resolve_market_rejects_expired_oracle_message() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Expiry test market");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &Address::generate(&env),
+            &None,
+        );
+
+        // Advance the ledger past the expires_at deadline.
+        let expires_at: u64 = env.ledger().timestamp() + 60;
+        env.ledger().set_timestamp(expires_at + 1);
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let err = client
+            .try_resolve_market(&resolver, &market_id_str, &outcome, &signature, &expires_at)
+            .unwrap_err()
+            .unwrap();
+
+        assert_eq!(
+            err,
+            crate::error::ContractError::OracleMessageExpired,
+            "expired oracle message must return OracleMessageExpired (#24)"
+        );
+    }
+
+    /// A message with `expires_at` still in the future must be accepted normally.
+    #[test]
+    fn resolve_market_accepts_non_expired_oracle_message() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Non-expired expiry test");
+        let current_time = env.ledger().timestamp();
+        let end_time = current_time + 86_400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &Address::generate(&env),
+            &None,
+        );
+
+        // expires_at is in the future — must succeed.
+        let expires_at: u64 = current_time + 3_600;
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        client.resolve_market(&resolver, &market_id_str, &outcome, &signature, &expires_at);
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(
+            market.status,
+            crate::types::MarketStatus::Resolved,
+            "market must be resolved when expires_at is still in the future"
+        );
+    }
+
+    /// Passing `expires_at = 0` disables expiry enforcement — the call must
+    /// succeed regardless of the current ledger timestamp (backwards compat).
+    #[test]
+    fn resolve_market_zero_expires_at_disables_expiry_check() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Zero expires_at test");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = 1u32;
+        let outcome = false;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &Address::generate(&env),
+            &None,
+        );
+
+        // Advance ledger far into the future — expires_at=0 means no check.
+        env.ledger().set_timestamp(u64::MAX / 2);
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        // expires_at=0 → no expiry enforcement, must succeed.
+        client.resolve_market(&resolver, &market_id_str, &outcome, &signature, &0u64);
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.status, crate::types::MarketStatus::Resolved);
+    }
+
+    /// Expiry check fires BEFORE signature verification so the error is always
+    /// `OracleMessageExpired` rather than `InvalidSignature` when both are wrong.
+    #[test]
+    fn resolve_market_expiry_checked_before_signature() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "Expiry order test");
+        let end_time = env.ledger().timestamp() + 86_400;
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &Address::generate(&env),
+            &None,
+        );
+
+        // Advance past expiry; also use an invalid signature — expiry must win.
+        let expires_at: u64 = env.ledger().timestamp() + 10;
+        env.ledger().set_timestamp(expires_at + 100);
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let bad_sig = BytesN::from_array(&env, &[0u8; 64]);
+        let err = client
+            .try_resolve_market(&resolver, &market_id_str, &true, &bad_sig, &expires_at)
+            .unwrap_err()
+            .unwrap();
+
+        assert_eq!(err, crate::error::ContractError::OracleMessageExpired);
+    }
+
+    /// Market must remain `Active` (no state mutation) when `resolve_market`
+    /// returns `OracleMessageExpired`.
+    #[test]
+    fn resolve_market_expired_message_leaves_market_unchanged() {
+        let (env, admin, client, contract_id) = create_test_contract();
+
+        let question = String::from_str(&env, "State mutation test");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &Address::generate(&env),
+            &None,
+        );
+
+        let expires_at: u64 = env.ledger().timestamp() + 30;
+        env.ledger().set_timestamp(expires_at + 1);
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let _ = client.try_resolve_market(
+            &resolver,
+            &market_id_str,
+            &outcome,
+            &signature,
+            &expires_at,
+        );
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.status, crate::types::MarketStatus::Active);
+        assert_eq!(market.result, None);
+        assert_eq!(market.resolver, None);
     }
 
     #[test]
@@ -1424,7 +1606,7 @@ mod test {
         let resolver = Address::generate(&env);
         let market_id_str = String::from_str(&env, &market_id.to_string());
         assert_eq!(
-            client.try_resolve_market(&resolver, &market_id_str, &true, &signature),
+            client.try_resolve_market(&resolver, &market_id_str, &true, &signature, &0u64),
             Err(Ok(ContractError::ResolutionNotFinalized))
         );
     }
@@ -1860,7 +2042,8 @@ mod test {
             storage::set_market(&env, market_id, &market).unwrap();
         });
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&market_id_str, &true, &signature);
+        let resolver = Address::generate(&env);
+        client.resolve_market(&resolver, &market_id_str, &true, &signature, &0u64);
 
         // Make sure the contract holds enough tokens to pay out.
         let stored_market = env.as_contract(&contract_id, || {
@@ -2020,12 +2203,12 @@ mod test {
         client.update_market_oracle(&admin, &market_id, &new_oracle_pubkey);
 
         let market_id_str = String::from_str(&env, "1");
-        let old_result = client.try_resolve_market(&resolver, &market_id_str, &true, &old_signature);
+        let old_result = client.try_resolve_market(&resolver, &market_id_str, &true, &old_signature, &0u64);
         assert_eq!(old_result, Err(Ok(ContractError::InvalidSignature)));
 
         let message = crate::oracle::construct_oracle_message(&env, market_id, true);
         let new_signature = BytesN::from_array(&env, &new_signing_key.sign(message.to_array().as_slice()).to_bytes());
-        let new_result = client.try_resolve_market(&resolver, &market_id_str, &true, &new_signature);
+        let new_result = client.try_resolve_market(&resolver, &market_id_str, &true, &new_signature, &0u64);
         assert_eq!(new_result, Ok(Ok(())));
 
         let market = env.as_contract(&contract_id, || storage::get_market(&env, market_id).unwrap().unwrap());
@@ -2304,7 +2487,9 @@ mod test {
         // Advance time past end_time so the market can be resolved.
         env.ledger().set_timestamp(end_time + 1);
 
-        client.resolve_market(&market_id, &true, &signature);
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        client.resolve_market(&resolver, &market_id_str, &true, &signature, &0u64);
 
         let market = client.get_market(&market_id);
         assert_eq!(market.status, MarketStatus::Resolved);
@@ -2361,4 +2546,55 @@ mod test {
         assert!(client.is_fee_waived(&account));
         assert_eq!(client.get_fee_waivers().len(), 1);
     }
+}
+
+#[test]
+fn test_decode_v3_market_blob_fails() {
+    use soroban_sdk::{xdr::{FromXdr, ToXdr}, Env, contracttype, Address, BytesN, String};
+    use crate::types::{MarketStatus, AdapterType, Market};
+    
+    let env = Env::default();
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[contracttype]
+    pub struct MarketV3 {
+        pub id: u32,
+        pub question: String,
+        pub end_time: u64,
+        pub oracle_pubkey: BytesN<32>,
+        pub status: MarketStatus,
+        pub result: Option<bool>,
+        pub creator: Address,
+        pub created_at: u64,
+        pub collateral_token: Address,
+        pub price_bps: i128,
+        pub resolver: Option<Address>,
+        pub resolved_at: Option<u64>,
+        pub adapter_type: AdapterType,
+        pub outcome_count: u32,
+    }
+
+    let v3_market = MarketV3 {
+        id: 1,
+        question: String::from_str(&env, "Will it rain?"),
+        end_time: 1234567890,
+        oracle_pubkey: BytesN::from_array(&env, &[0; 32]),
+        status: MarketStatus::Active,
+        result: None,
+        creator: Address::generate(&env),
+        created_at: 1234560000,
+        collateral_token: Address::generate(&env),
+        price_bps: 5000,
+        resolver: None,
+        resolved_at: None,
+        adapter_type: AdapterType::Ed25519,
+        outcome_count: 2,
+    };
+
+    // Serialize V3 market
+    let v3_xdr = v3_market.to_xdr(&env);
+
+    // Attempting to decode as V4 Market should fail because closed_to_deposits is missing
+    let decode_result = Market::from_xdr(&env, &v3_xdr);
+    assert!(decode_result.is_err(), "Decoding V3 market as V4 should fail intentionally because it lacks closed_to_deposits");
 }

@@ -79,7 +79,7 @@ fn close_market_to_deposits_succeeds() {
     assert_eq!(market_after.closed_to_deposits, true);
 
     // Verify the event was emitted
-    assert_event_emitted(&env, "market_closed_to_deposits_event");
+    assert_event_emitted(&env, "market_closed_to_deposits");
 }
 
 #[test]
