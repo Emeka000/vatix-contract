@@ -2498,6 +2498,54 @@ mod test {
         assert!(market.resolver.is_some());
         assert!(market.resolved_at.is_some());
     }
+
+    // ========== add_fee_waiver misuse rejection (#584) ==========
+
+    /// A contract address is not a valid depositor and must never receive a
+    /// fee waiver — the same rule `validate_admin_address` applies to the admin.
+    #[test]
+    fn test_add_fee_waiver_rejects_contract_address() {
+        use crate::error::ContractError;
+
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let waiver_contract = env.register(MarketContract, ());
+
+        assert_eq!(
+            client.try_add_fee_waiver(&admin, &waiver_contract),
+            Err(Ok(ContractError::InvalidFeeWaiverAccount))
+        );
+        assert!(!client.is_fee_waived(&waiver_contract));
+    }
+
+    /// The admin cannot add itself to the fee waiver list — it already
+    /// controls `set_fee_rate`, so self-waiving would let it silently exempt
+    /// itself from the fee it sets for everyone else.
+    #[test]
+    fn test_add_fee_waiver_rejects_admin_self_waiver() {
+        use crate::error::ContractError;
+
+        let (_env, admin, client, _contract_id) = create_test_contract();
+
+        assert_eq!(
+            client.try_add_fee_waiver(&admin, &admin),
+            Err(Ok(ContractError::InvalidFeeWaiverAccount))
+        );
+        assert!(!client.is_fee_waived(&admin));
+    }
+
+    /// A regular user account can be waived, and adding it twice is a no-op
+    /// that leaves exactly one entry in the list.
+    #[test]
+    fn test_add_fee_waiver_accepts_user_and_is_idempotent() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        let account = Address::generate(&env);
+
+        client.add_fee_waiver(&admin, &account);
+        client.add_fee_waiver(&admin, &account);
+
+        assert!(client.is_fee_waived(&account));
+        assert_eq!(client.get_fee_waivers().len(), 1);
+    }
 }
 
 #[test]

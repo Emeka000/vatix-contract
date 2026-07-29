@@ -338,6 +338,29 @@ pub fn validate_admin_address(admin: &Address) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// Validate that `account` is eligible for the admin-managed fee waiver list (#584).
+///
+/// Two misuse cases are rejected:
+/// - `account` is a contract address (mirrors [`validate_admin_address`]) —
+///   the waiver list is meant for real depositors, not contracts.
+/// - `account` is the current `admin` — the admin already controls the fee
+///   rate via [`crate::MarketContract::set_fee_rate`], so allowing self-waiver
+///   would let it silently exempt itself from the fees it sets for everyone
+///   else.
+///
+/// # Errors
+/// - [`ContractError::InvalidFeeWaiverAccount`] – `account` is a contract
+///   address or equals `admin`.
+pub fn validate_fee_waiver_account(
+    account: &Address,
+    admin: &Address,
+) -> Result<(), ContractError> {
+    if account.executable().is_some() || account == admin {
+        return Err(ContractError::InvalidFeeWaiverAccount);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,6 +618,35 @@ mod tests {
         assert_eq!(
             validate_admin_address(&contract_id),
             Err(ContractError::InvalidAdmin)
+        );
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_user_ok() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        let account = Address::generate(&env);
+        assert!(validate_fee_waiver_account(&account, &admin).is_ok());
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_contract_fails() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(crate::MarketContract, ());
+        assert_eq!(
+            validate_fee_waiver_account(&contract_id, &admin),
+            Err(ContractError::InvalidFeeWaiverAccount)
+        );
+    }
+
+    #[test]
+    fn test_validate_fee_waiver_account_self_waiver_fails() {
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        assert_eq!(
+            validate_fee_waiver_account(&admin, &admin),
+            Err(ContractError::InvalidFeeWaiverAccount)
         );
     }
 

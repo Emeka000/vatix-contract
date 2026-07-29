@@ -157,6 +157,14 @@ pub enum ContractError {
     /// Fee rate is invalid (e.g. exceeds the configured fee cap or is out of range).
     InvalidFeeRate = 38,
 
+    /// Fee waiver account is invalid (a contract address, or the admin itself).
+    ///
+    /// The admin-managed fee waiver list (#483) may only hold ordinary user
+    /// accounts. Contract addresses are rejected the same way `InvalidAdmin`
+    /// rejects them, and the admin's own address is rejected so the admin
+    /// cannot quietly exempt itself from withdrawal fees it controls (#584).
+    InvalidFeeWaiverAccount = 39,
+
     // ========== Authorization Errors (40-49) ==========
     /// Caller is not authorized to perform this action.
     ///
@@ -274,6 +282,7 @@ mod tests {
         assert_eq!(ContractError::BelowMinDeposit as u32, 36);
         assert_eq!(ContractError::InvalidMetadataUri as u32, 37);
         assert_eq!(ContractError::InvalidFeeRate as u32, 38);
+        assert_eq!(ContractError::InvalidFeeWaiverAccount as u32, 39);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
@@ -342,6 +351,7 @@ mod tests {
             (ContractError::BelowMinDeposit, 36),
             (ContractError::InvalidMetadataUri, 37),
             (ContractError::InvalidFeeRate, 38),
+            (ContractError::InvalidFeeWaiverAccount, 39),
             (ContractError::Unauthorized, 40),
             (ContractError::NotAdmin, 41),
             (ContractError::AlreadyInitialized, 42),
