@@ -39,6 +39,10 @@ See [`docs/cross-contract-call-graph.md`](docs/cross-contract-call-graph.md) for
 
 ## Documentation
 
+### Security
+
+Please review our [Security Policy](SECURITY.md) for information on reporting contract vulnerabilities.
+
 ### Storage Migrations
 
 The Market contract uses storage versioning to ensure data integrity across upgrades. See comprehensive documentation:
@@ -52,6 +56,8 @@ The Market contract uses storage versioning to ensure data integrity across upgr
   - Common pitfalls and solutions
   
 - **[Migration History](contracts/market/MIGRATION.md)** - Specific changes and data migration notes
+
+- **[Cross-Contract Upgrade Playbook](scripts/upgrade/UPGRADE_PLAYBOOK.md)** - Executable, multi-contract upgrade safety net covering Market, Treasury, Resolution, and Outcome Token together: deploy order, WASM hash pinning, the storage version compatibility matrix, a dual-read migration template for the next storage bump, a staging dry-run checklist, and rollback. Run `bash scripts/upgrade/check-upgrade.sh` for a scripted pass/fail dry-run; see the `upgrade-dry-run` CI job in `.github/workflows/ci.yml` for how it's enforced automatically.
 
 **Quick Reference:**
 - Current storage version: `3`
@@ -146,6 +152,10 @@ pnpm install
 pnpm dev          # http://localhost:3002
 pnpm build:web
 ```
+
+> **Freighter wallet integration:** See [`docs/freighter-integration-guide.md`](docs/freighter-integration-guide.md)
+> for setup instructions, transaction signing flow, ScVal helpers, and
+> troubleshooting — including [network mismatch errors](docs/freighter-integration-guide.md#network-mismatch-errors-issue-587).
 
 ## Getting Started
 
