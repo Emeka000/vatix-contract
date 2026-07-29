@@ -38,6 +38,7 @@
 //! | `close_market_to_deposits`         | admin                           |
 //! | `set_resolution_contract`          | admin                           |
 //! | `set_fee_cap`                      | admin                           |
+//! | `void_market`                      | registered resolution contract  |
 //!
 //! ## Storage layout
 //!
@@ -647,6 +648,48 @@ impl MarketContract {
 
         // 4. Emit the cancellation event for off-chain indexers.
         events::emit_market_canceled(&env, market_id, &admin, env.ledger().timestamp());
+
+        Ok(())
+    }
+
+    /// Void a market whose on-chain dispute-resolution process reached a
+    /// terminal, unresolvable state (the registered resolution contract
+    /// exhausted its max appeal rounds with no safely-attestable outcome).
+    ///
+    /// This is the counterpart to the `require_resolution_finalized` gate on
+    /// `resolve_market`: just as that gate lets only the registered
+    /// resolution contract's `finalize` unlock a normal resolution, this
+    /// entrypoint lets only that same contract force a market out of a
+    /// stuck dispute, without needing to impersonate the market's admin.
+    /// Behaves identically to `cancel_market` from the market's perspective
+    /// (`Active` → `Canceled`, collateral reclaimable via
+    /// `withdraw_canceled_collateral`) but is authorized by the resolution
+    /// contract rather than the admin.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] – no resolution contract is registered,
+    ///   or `caller` is not the registered resolution contract
+    /// - [`ContractError::MarketNotFound`] – the market does not exist
+    /// - [`ContractError::MarketAlreadyResolved`] – the market is already resolved
+    /// - [`ContractError::MarketNotActive`] – the market is already canceled
+    pub fn void_market(env: Env, caller: Address, market_id: u32) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
+        caller.require_auth();
+        let resolution_contract =
+            storage::get_resolution_contract(&env).ok_or(ContractError::NotAdmin)?;
+        if caller != resolution_contract {
+            return Err(ContractError::NotAdmin);
+        }
+
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        validation::validate_cancelable(&market.status)?;
+
+        market.status = MarketStatus::Canceled;
+        storage::set_market(&env, market_id, &market)?;
+
+        events::emit_market_canceled(&env, market_id, &caller, env.ledger().timestamp());
 
         Ok(())
     }

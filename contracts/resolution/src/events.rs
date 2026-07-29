@@ -30,6 +30,7 @@ pub struct CandidateProposed {
     pub evidence_uri: String,
     pub challenge_deadline: u64,
     pub signature_expiry: u64,
+    pub bond_amount: i128,
 }
 
 pub fn emit_candidate_proposed(env: &Env, candidate: &crate::types::ResolutionCandidate) {
@@ -41,6 +42,7 @@ pub fn emit_candidate_proposed(env: &Env, candidate: &crate::types::ResolutionCa
         evidence_uri: candidate.evidence_uri.clone(),
         challenge_deadline: candidate.challenge_deadline,
         signature_expiry: candidate.signature_expiry,
+        bond_amount: candidate.bond_amount,
     }
     .publish(env);
 }
@@ -54,6 +56,7 @@ pub struct CandidateChallenged {
     pub market_id: u32,
     pub challenger: Address,
     pub challenge_uri: String,
+    pub bond_amount: i128,
     pub challenged_at: u64,
 }
 
@@ -63,13 +66,136 @@ pub fn emit_candidate_challenged(
     market_id: u32,
     challenger: &Address,
     challenge_uri: &String,
+    bond_amount: i128,
 ) {
     CandidateChallenged {
         candidate_id,
         market_id,
         challenger: challenger.clone(),
         challenge_uri: challenge_uri.clone(),
+        bond_amount,
         challenged_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// A bond (proposer's or a challenger's) was forfeited and split into a
+/// reward to the winning party, a burned portion, and a treasury portion
+/// (Issue: dispute-game economics). `loser` is whoever posted the bond;
+/// `winner` receives the reward share.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BondSlashed {
+    #[topic]
+    pub candidate_id: u32,
+    #[topic]
+    pub market_id: u32,
+    pub loser: Address,
+    pub winner: Address,
+    pub total: i128,
+    pub reward: i128,
+    pub burned: i128,
+    pub treasury_cut: i128,
+    pub slashed_at: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_bond_slashed(
+    env: &Env,
+    candidate_id: u32,
+    market_id: u32,
+    loser: &Address,
+    winner: &Address,
+    total: i128,
+    reward: i128,
+    burned: i128,
+    treasury_cut: i128,
+) {
+    BondSlashed {
+        candidate_id,
+        market_id,
+        loser: loser.clone(),
+        winner: winner.clone(),
+        total,
+        reward,
+        burned,
+        treasury_cut,
+        slashed_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// A bond was refunded in full (no fault determined), e.g. every recorded
+/// challenger's bond when a market is voided.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BondRefunded {
+    #[topic]
+    pub candidate_id: u32,
+    #[topic]
+    pub market_id: u32,
+    pub recipient: Address,
+    pub amount: i128,
+    pub refunded_at: u64,
+}
+
+pub fn emit_bond_refunded(
+    env: &Env,
+    candidate_id: u32,
+    market_id: u32,
+    recipient: &Address,
+    amount: i128,
+) {
+    BondRefunded {
+        candidate_id,
+        market_id,
+        recipient: recipient.clone(),
+        amount,
+        refunded_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// Admin arbitration upheld the proposer's disputed outcome after
+/// `MAX_APPEAL_ROUNDS` were exhausted (Issue: dispute-game economics).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CandidateArbitrated {
+    #[topic]
+    pub candidate_id: u32,
+    #[topic]
+    pub market_id: u32,
+    pub outcome: bool,
+    pub arbitrated_at: u64,
+}
+
+pub fn emit_candidate_arbitrated(env: &Env, candidate_id: u32, market_id: u32, outcome: bool) {
+    CandidateArbitrated {
+        candidate_id,
+        market_id,
+        outcome,
+        arbitrated_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+/// The underlying market was voided after `MAX_APPEAL_ROUNDS` were exhausted
+/// with no safely-attestable outcome (Issue: dispute-game economics).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketVoided {
+    #[topic]
+    pub candidate_id: u32,
+    #[topic]
+    pub market_id: u32,
+    pub voided_at: u64,
+}
+
+pub fn emit_market_voided(env: &Env, candidate_id: u32, market_id: u32) {
+    MarketVoided {
+        candidate_id,
+        market_id,
+        voided_at: env.ledger().timestamp(),
     }
     .publish(env);
 }
