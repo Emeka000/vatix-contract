@@ -588,6 +588,86 @@ fn unpause_rejects_non_admin() {
     assert_eq!(err, TreasuryError::Unauthorized);
 }
 
+// ── #593: collect_fee pause gate ─────────────────────────────────────────────
+
+/// `collect_fee` must be blocked while the treasury is paused and must return
+/// `ContractPaused` (#50) — not succeed, not panic, not return a different error.
+#[test]
+fn collect_fee_paused_returns_contract_paused() {
+    let s = setup();
+    s.client.pause(&s.admin);
+
+    let err = s
+        .client
+        .try_collect_fee(&s.market, &s.token, &42u32, &1_000i128)
+        .unwrap_err()
+        .unwrap();
+
+    assert_eq!(
+        err,
+        TreasuryError::ContractPaused,
+        "collect_fee must return ContractPaused while treasury is paused"
+    );
+}
+
+/// The pause gate is checked before the authorised-market check, so even a
+/// caller that is NOT a registered market gets `ContractPaused` rather than
+/// `CallerNotMarket` while the treasury is paused.
+#[test]
+fn collect_fee_paused_before_market_auth_check() {
+    let s = setup();
+    s.client.pause(&s.admin);
+
+    let rogue = Address::generate(&s.env);
+    let err = s
+        .client
+        .try_collect_fee(&rogue, &s.token, &1u32, &500i128)
+        .unwrap_err()
+        .unwrap();
+
+    // The pause gate fires before the market-registry check.
+    assert_eq!(err, TreasuryError::ContractPaused);
+}
+
+/// Balances must remain unchanged after a rejected `collect_fee` during pause.
+/// No state must be mutated when the call returns `ContractPaused`.
+#[test]
+fn collect_fee_paused_leaves_balances_unchanged() {
+    let s = setup();
+    // Collect some fees before pausing so we have a non-zero baseline.
+    s.client.collect_fee(&s.market, &s.token, &1u32, &200_000i128);
+    let balance_before = s.client.token_balance(&s.token);
+    let cumulative_before = s.client.get_cumulative_fees(&s.token);
+    let total_before = s.client.total_collected();
+
+    s.client.pause(&s.admin);
+
+    // Attempt a second collection while paused — must be rejected.
+    let _ = s
+        .client
+        .try_collect_fee(&s.market, &s.token, &2u32, &100_000i128);
+
+    // All counters must be unchanged.
+    assert_eq!(s.client.token_balance(&s.token), balance_before);
+    assert_eq!(s.client.get_cumulative_fees(&s.token), cumulative_before);
+    assert_eq!(s.client.total_collected(), total_before);
+}
+
+/// After unpausing, `collect_fee` should succeed and update all counters as
+/// normal — proving the gate does not leave permanent side effects.
+#[test]
+fn collect_fee_resumes_after_unpause() {
+    let s = setup();
+    s.client.pause(&s.admin);
+    s.client.unpause(&s.admin);
+
+    s.client.collect_fee(&s.market, &s.token, &7u32, &50_000i128);
+
+    assert_eq!(s.client.token_balance(&s.token), 50_000);
+    assert_eq!(s.client.get_cumulative_fees(&s.token), 50_000);
+    assert_eq!(s.client.total_collected(), 50_000);
+}
+
 // ── stakeholder fee distribution (#485) ───────────────────────────────────────
 
 #[test]
