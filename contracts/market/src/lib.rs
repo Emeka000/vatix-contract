@@ -1097,10 +1097,14 @@ impl MarketContract {
     /// Waived addresses pay no withdrawal fee regardless of the configured
     /// [`set_fee_rate`]. Adding an address that is already waived is a no-op.
     ///
-    /// Only the stored admin may call this.
+    /// Only the stored admin may call this. `account` must be an ordinary
+    /// user account: contract addresses are rejected, and the admin cannot
+    /// waive itself (#584) — see [`validation::validate_fee_waiver_account`].
     ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::InvalidFeeWaiverAccount`] — `account` is a contract
+    ///   address or equals the admin.
     pub fn add_fee_waiver(
         env: Env,
         admin: Address,
@@ -1112,6 +1116,7 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
+        validation::validate_fee_waiver_account(&account, &stored_admin)?;
         storage::add_fee_waiver(&env, &account);
         events::emit_fee_waiver_added(&env, &account, &admin);
         Ok(())

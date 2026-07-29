@@ -372,6 +372,46 @@ fn add_market_is_idempotent() {
     assert_eq!(s.client.list_markets().len(), 1);
 }
 
+/// Issue #585: `list_markets` is the read path over the `AuthorizedMarkets`
+/// registry — exercise it through a full add/remove/re-add sequence and
+/// assert both contents *and* order at each step, not just the length.
+#[test]
+fn list_markets_reflects_order_and_contents_after_add_remove() {
+    let s = setup();
+    let market2 = Address::generate(&s.env);
+    let market3 = Address::generate(&s.env);
+
+    // Freshly initialized: only the market registered by `initialize`.
+    let markets = s.client.list_markets();
+    assert_eq!(markets.len(), 1);
+    assert_eq!(markets.get(0).unwrap(), s.market);
+
+    // Appends preserve insertion order.
+    s.client.add_market(&s.admin, &market2);
+    s.client.add_market(&s.admin, &market3);
+    let markets = s.client.list_markets();
+    assert_eq!(markets.len(), 3);
+    assert_eq!(markets.get(0).unwrap(), s.market);
+    assert_eq!(markets.get(1).unwrap(), market2);
+    assert_eq!(markets.get(2).unwrap(), market3);
+
+    // Removing a middle entry preserves the relative order of the rest.
+    s.client.remove_market(&s.admin, &market2);
+    let markets = s.client.list_markets();
+    assert_eq!(markets.len(), 2);
+    assert_eq!(markets.get(0).unwrap(), s.market);
+    assert_eq!(markets.get(1).unwrap(), market3);
+    assert!(!markets.contains(&market2));
+
+    // Re-adding appends at the end rather than restoring the original slot.
+    s.client.add_market(&s.admin, &market2);
+    let markets = s.client.list_markets();
+    assert_eq!(markets.len(), 3);
+    assert_eq!(markets.get(0).unwrap(), s.market);
+    assert_eq!(markets.get(1).unwrap(), market3);
+    assert_eq!(markets.get(2).unwrap(), market2);
+}
+
 #[test]
 fn add_market_rejects_non_admin() {
     let s = setup();
