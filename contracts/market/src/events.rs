@@ -437,6 +437,40 @@ pub fn emit_market_canceled(env: &Env, market_id: u32, canceler: &Address, cance
     .publish(env);
 }
 
+/// Event emitted when an admin explicitly reopens a previously canceled market.
+///
+/// A `Canceled` → `Active` transition is only valid through this explicit
+/// admin-gated path. Any other route that would silently restore `Active`
+/// status is rejected by [`crate::validation::validate_reopenable`].
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketReopened {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    pub admin: Address,
+    pub reopened_at: u64,
+}
+
+/// Emit a MarketReopened event when the admin explicitly restores a canceled
+/// market to Active status via the guarded `reopen_market` entry point.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `market_id` - Unique identifier of the reopened market
+/// * `admin` - Admin address that authorized the reopen
+/// * `reopened_at` - Unix timestamp (ledger time) of the reopen
+pub fn emit_market_reopened(env: &Env, market_id: u32, admin: &Address, reopened_at: u64) {
+    MarketReopened {
+        version: EVENT_VERSION,
+        market_id,
+        admin: admin.clone(),
+        reopened_at,
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct PositionLimitExceeded {

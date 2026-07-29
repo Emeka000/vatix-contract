@@ -19,15 +19,22 @@ tarpaulin-report.json
 .idea/
 *.swp
 *.swo
+*.iml
+.classpath
+.project
+.settings/
 
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+desktop.ini
 
 # Build artifacts
 *.so
 *.dylib
 *.dll
+*.wasm.map
 
 # Soroban / WASM test snapshots — regenerate with `cargo test`
 contracts/*/test_snapshots
@@ -41,6 +48,13 @@ apps/web/.next/
 apps/web/out/
 dist/
 apps/web/tsconfig.tsbuildinfo
+.turbo/
+
+# Environment files (never commit real secrets)
+.env
+.env.local
+.env.*.local
+!.env.local.example
 
 # Jest / Vitest snapshots
 **/__snapshots__/
@@ -57,3 +71,9 @@ vrickish.md
 
 # Somzilla issues tracking
 somzilla.md
+
+# Misc temporary files
+*.tmp
+*.bak
+*.orig
+*.log
