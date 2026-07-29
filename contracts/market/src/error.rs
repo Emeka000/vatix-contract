@@ -110,6 +110,11 @@ pub enum ContractError {
     /// node network may be temporarily disconnected.
     OraclePriceUnavailable = 23,
 
+    /// The oracle message has an `expires_at` deadline that has already
+    /// passed. Signed outcomes cannot be replayed after their stated
+    /// deadline — submit a freshly signed message instead.
+    OracleMessageExpired = 24,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///
@@ -259,6 +264,7 @@ mod tests {
         assert_eq!(ContractError::UnauthorizedOracle as u32, 21);
         assert_eq!(ContractError::InvalidOutcome as u32, 22);
         assert_eq!(ContractError::OraclePriceUnavailable as u32, 23);
+        assert_eq!(ContractError::OracleMessageExpired as u32, 24);
         assert_eq!(ContractError::InvalidPrice as u32, 30);
         assert_eq!(ContractError::InvalidQuantity as u32, 31);
         assert_eq!(ContractError::InvalidTimestamp as u32, 32);
@@ -326,6 +332,7 @@ mod tests {
             (ContractError::UnauthorizedOracle, 21),
             (ContractError::InvalidOutcome, 22),
             (ContractError::OraclePriceUnavailable, 23),
+            (ContractError::OracleMessageExpired, 24),
             (ContractError::InvalidPrice, 30),
             (ContractError::InvalidQuantity, 31),
             (ContractError::InvalidTimestamp, 32),

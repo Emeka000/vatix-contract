@@ -53,6 +53,8 @@ The Market contract uses storage versioning to ensure data integrity across upgr
   
 - **[Migration History](contracts/market/MIGRATION.md)** - Specific changes and data migration notes
 
+- **[Cross-Contract Upgrade Playbook](scripts/upgrade/UPGRADE_PLAYBOOK.md)** - Executable, multi-contract upgrade safety net covering Market, Treasury, Resolution, and Outcome Token together: deploy order, WASM hash pinning, the storage version compatibility matrix, a dual-read migration template for the next storage bump, a staging dry-run checklist, and rollback. Run `bash scripts/upgrade/check-upgrade.sh` for a scripted pass/fail dry-run; see the `upgrade-dry-run` CI job in `.github/workflows/ci.yml` for how it's enforced automatically.
+
 **Quick Reference:**
 - Current storage version: `3`
 - Always bump version for: field changes, type changes, semantic changes to stored data

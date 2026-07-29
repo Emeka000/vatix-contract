@@ -416,6 +416,10 @@ impl MarketContract {
     /// * `market_id` - Market to resolve (decimal string, e.g. "1")
     /// * `outcome` - Outcome (true = YES won, false = NO won)
     /// * `signature` - Oracle's Ed25519 signature (64 bytes)
+    /// * `expires_at` - Unix timestamp deadline after which this signed message
+    ///   is no longer valid. Pass `0` to disable expiry enforcement (backwards
+    ///   compatible with callers that do not supply a deadline). A non-zero
+    ///   value that is in the past returns [`ContractError::OracleMessageExpired`].
     ///
     /// # Returns
     /// Unit (success)
@@ -423,6 +427,7 @@ impl MarketContract {
     /// # Errors
     /// - MarketNotFound
     /// - MarketAlreadyResolved
+    /// - OracleMessageExpired: The oracle message deadline has passed
     /// - InvalidSignature: Signature verification failed
     /// - UnauthorizedOracle: Wrong oracle pubkey
     ///
@@ -434,6 +439,7 @@ impl MarketContract {
         market_id: String,
         outcome: bool,
         signature: BytesN<64>,
+        expires_at: u64,
     ) -> Result<(), ContractError> {
         validation::require_not_paused(&env)?;
         resolver.require_auth();
@@ -445,7 +451,16 @@ impl MarketContract {
             return Err(ContractError::MarketAlreadyResolved);
         }
 
-        // Step 1.5: When a resolution contract is registered for this
+        // Step 1.5 (expiry): Reject stale oracle messages. A non-zero
+        // `expires_at` that is strictly less than the current ledger timestamp
+        // means the signed payload has outlived its intended window and must
+        // not be applied — prevents long-lived signatures being replayed weeks
+        // or months after they were originally produced.
+        if expires_at != 0 && env.ledger().timestamp() > expires_at {
+            return Err(ContractError::OracleMessageExpired);
+        }
+
+        // Step 1.6: When a resolution contract is registered for this
         // contract (see `set_resolution_contract`), resolve_market may only
         // be reached once that contract has finalized a matching candidate
         // — i.e. its challenge-window lifecycle has run to completion. This

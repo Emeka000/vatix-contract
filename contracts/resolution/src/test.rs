@@ -123,7 +123,7 @@ fn challenge_after_deadline_is_rejected() {
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60);
+    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let challenger = Address::generate(&env);
@@ -156,7 +156,7 @@ fn finalize_calls_resolve_market_on_market_contract() {
     set_time(&env, 1_000);
     let proposer = Address::generate(&env);
     let sig = signature(&env);
-    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60);
+    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let finalizer = Address::generate(&env);
