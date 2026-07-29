@@ -27,7 +27,7 @@ pub enum StorageKey {
     TokenBalance(Address),
     /// Monotonically increasing cumulative fees collected per token (never decreases).
     CumulativeFees(Address),
-    /// Global monotone counter: total of all fees ever collected across all tokens.
+    /// Global counter: total of all fees currently held across all tokens. Decreases on withdrawal.
     TotalCollected,
     /// When `true`, `collect_fee` and `withdraw_fees` are blocked until unpaused.
     Paused,

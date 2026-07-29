@@ -170,6 +170,9 @@ impl TreasuryContract {
         let remaining = balance - amount;
         storage::set_token_balance(&env, &token, remaining);
 
+        let prev_total = storage::get_total_collected(&env)?;
+        storage::set_total_collected(&env, prev_total.checked_sub(amount).unwrap_or(0));
+
         events::emit_fees_withdrawn(&env, &token, &to, amount, remaining);
         Ok(())
     }
@@ -441,7 +444,7 @@ impl TreasuryContract {
     /// in the authorized-markets registry). Returns `NotInitialized` if no
     /// market has ever been registered.
     pub fn market_contract(env: Env) -> Result<Address, TreasuryError> {
-        storage::get_authorized_markets(&env)?
+        storage::get_authorized_markets(&env)
             .get(0)
             .ok_or(TreasuryError::NotInitialized)
     }
@@ -453,7 +456,7 @@ impl TreasuryContract {
 
     /// Return every market contract currently authorized to call `collect_fee`.
     pub fn list_markets(env: Env) -> Result<Vec<Address>, TreasuryError> {
-        storage::get_authorized_markets(&env)
+        Ok(storage::get_authorized_markets(&env))
     }
 
     /// Return every distinct token mint that has ever had a fee collected for it (#484).

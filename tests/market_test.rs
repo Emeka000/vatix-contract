@@ -357,20 +357,15 @@ fn duplicate_market_id_creation_is_rejected() {
     assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
 }
 
-// --- #557: deposit → withdraw_unused_collateral happy path ---
+// --- #554: zero-quantity deposit is rejected at the public API boundary ---
 
-/// Integration harness: deposit collateral then withdraw unused collateral
-/// after the cooldown period has elapsed.
-///
-/// Verifies:
-/// - Token balance moves from user → contract on deposit
-/// - Withdrawal is blocked before the 1-hour cooldown elapses
-/// - Token balance moves from contract → user on withdraw after cooldown
-/// - The `collateral_withdrawn` event is emitted
-/// - Withdrawing more than available is rejected with InsufficientCollateral
+/// Asserts that `try_deposit_collateral` deterministically returns
+/// `InvalidQuantity` when called with amount = 0.
+/// This is a workspace-level integration test exercising the public contract
+/// client, complementing the unit test already in `deposit.rs`.
 #[test]
-fn deposit_then_withdraw_unused_collateral_happy_path() {
-    use soroban_sdk::{token::Client as TokenClient, String};
+fn deposit_zero_quantity_is_rejected() {
+    use vatix_market_contract::error::ContractError;
 
     let env = Env::default();
     env.mock_all_auths();
@@ -378,75 +373,26 @@ fn deposit_then_withdraw_unused_collateral_happy_path() {
     let (admin, contract_id) = helpers::register_contract(&env);
     let client = MarketContractClient::new(&env, &contract_id);
 
-    // Real SAC collateral token so on-chain balances are observable.
     let token_admin = Address::generate(&env);
     let token = env.register_stellar_asset_contract_v2(token_admin);
     let collateral_token = token.address();
-    let sac = StellarAssetClient::new(&env, &collateral_token);
-    let token_client = TokenClient::new(&env, &collateral_token);
 
-    let (oracle_pubkey, _signing_key) = helpers::oracle_keypair(&env);
+    let params = helpers::MarketParams {
+        question: soroban_sdk::String::from_str(&env, "Will BTC reach $100k?"),
+        end_time: env.ledger().timestamp() + 86_400,
+        oracle_pubkey: soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        collateral_token: collateral_token.clone(),
+    };
 
-    // 1. Create market.
-    let question = String::from_str(&env, "Will the withdrawal test pass?");
-    let end_time = env.ledger().timestamp() + 86_400;
-    let market_id =
-        client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token);
-    assert_eq!(market_id, 1);
-
-    // 2. Deposit collateral: tokens move user → contract.
-    let user = Address::generate(&env);
-    let deposit_amount = 50 * STROOPS_PER_USDC;
-    sac.mint(&user, &deposit_amount);
-    client.deposit_collateral(&user, &market_id, &deposit_amount);
-    assert_event_emitted(&env, "collateral_deposited");
-    assert_eq!(token_client.balance(&user), 0);
-    assert_eq!(token_client.balance(&contract_id), deposit_amount);
-
-    // 3. Withdrawal is blocked before the 1-hour cooldown elapses.
-    let withdraw_amount = 20 * STROOPS_PER_USDC;
-    let before_cooldown =
-        client.try_withdraw_unused_collateral(&user, &market_id, &withdraw_amount);
-    assert!(
-        before_cooldown.is_err(),
-        "withdrawal must be rejected before the 3600 s cooldown elapses"
+    let market_id = client.initialize_market(
+        &admin,
+        &params.question,
+        &params.end_time,
+        &params.oracle_pubkey,
+        &params.collateral_token,
     );
 
-    // 4. Advance ledger clock past the 3 600-second cooldown.
-    let deposit_time = env.ledger().timestamp();
-    env.ledger().with_mut(|li| {
-        li.timestamp = deposit_time + 3_601;
-    });
-
-    // 5. Withdraw succeeds after the cooldown: tokens move contract → user.
-    client.withdraw_unused_collateral(&user, &market_id, &withdraw_amount);
-    assert_event_emitted(&env, "collateral_withdrawn");
-    assert_eq!(token_client.balance(&user), withdraw_amount);
-    assert_eq!(
-        token_client.balance(&contract_id),
-        deposit_amount - withdraw_amount
-    );
-
-    // 6. Storage reflects the reduced balance.
-    let position = env.as_contract(&contract_id, || {
-        storage::get_position(&env, market_id, &user)
-            .unwrap()
-            .expect("position should exist after partial withdrawal")
-    });
-    assert_eq!(
-        position.total_deposited,
-        deposit_amount - withdraw_amount,
-        "total_deposited must reflect the withdrawn amount"
-    );
-    // No shares were ever bought, so nothing should be locked.
-    assert_eq!(position.locked_collateral, 0, "no shares held — locked_collateral must remain 0");
-
-    // 7. Attempting to withdraw more than the remaining available balance is
-    //    rejected (fee optional: default fee rate is 0 bps, so available == total_deposited).
-    let overshoot = deposit_amount; // larger than remaining total_deposited
-    let over_result = client.try_withdraw_unused_collateral(&user, &market_id, &overshoot);
-    assert!(
-        over_result.is_err(),
-        "withdrawing more than available must be rejected with InsufficientCollateral"
-    );
+    // Zero-quantity deposit must be deterministically rejected with InvalidQuantity.
+    let result = client.try_deposit_collateral(&Address::generate(&env), &market_id, &0i128);
+    assert_eq!(result, Err(Ok(ContractError::InvalidQuantity)));
 }

@@ -123,7 +123,7 @@ fn challenge_after_deadline_is_rejected() {
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60);
+    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let challenger = Address::generate(&env);
@@ -156,7 +156,7 @@ fn finalize_calls_resolve_market_on_market_contract() {
     set_time(&env, 1_000);
     let proposer = Address::generate(&env);
     let sig = signature(&env);
-    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60);
+    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
 
     set_time(&env, 1_061);
     let finalizer = Address::generate(&env);
@@ -596,4 +596,71 @@ fn finalize_rejected_one_second_after_signature_expiry() {
         client.try_finalize(&finalizer, &candidate_id),
         Err(Ok(ContractError::SignatureExpired))
     );
+}
+
+// ── Issue #577: finalize is exactly-once ─────────────────────────────────────
+//
+// A second call to finalize() on an already-finalized candidate must return
+// CandidateAlreadyFinalized without re-invoking the market's resolve_market.
+
+/// First finalize succeeds; a second finalize on the same candidate_id must
+/// return CandidateAlreadyFinalized (exactly-once guarantee, Issue #577).
+#[test]
+fn double_finalize_returns_already_finalized() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    let window = MIN_WINDOW;
+    let expiry = env.ledger().timestamp() + window + 7_200;
+    let candidate_id = client.propose(
+        &proposer, &77u32, &true, &signature(&env), &expiry,
+        &evidence(&env), &window, &BOND,
+    );
+
+    // Advance past the challenge window.
+    set_time(&env, 1_000 + window + 1);
+
+    let finalizer = Address::generate(&env);
+    // First finalize must succeed.
+    let first = client.finalize(&finalizer, &candidate_id);
+    assert_eq!(first.status, crate::types::CandidateStatus::Finalized);
+
+    // Second finalize on the same candidate must be rejected safely —
+    // no second resolve_market cross-contract call is fired.
+    let second = client.try_finalize(&finalizer, &candidate_id);
+    assert_eq!(
+        second,
+        Err(Ok(ContractError::CandidateAlreadyFinalized)),
+        "second finalize must return CandidateAlreadyFinalized (Issue #577)"
+    );
+}
+
+/// Verify that after a successful finalize the stored candidate status is
+/// Finalized, so any subsequent finalize attempt is blocked at the guard
+/// (Issue #577).
+#[test]
+fn finalized_candidate_status_is_persisted() {
+    let env = Env::default();
+    let (client, _, _) = setup(&env);
+    set_time(&env, 2_000);
+
+    let proposer = Address::generate(&env);
+    let window = MIN_WINDOW;
+    let expiry = env.ledger().timestamp() + window + 7_200;
+    let candidate_id = client.propose(
+        &proposer, &42u32, &false, &signature(&env), &expiry,
+        &evidence(&env), &window, &BOND,
+    );
+
+    set_time(&env, 2_000 + window + 1);
+
+    let finalizer = Address::generate(&env);
+    client.finalize(&finalizer, &candidate_id);
+
+    // The candidate retrieved from storage must show Finalized status.
+    let stored = client.get_candidate(&candidate_id).expect("candidate must exist");
+    assert_eq!(stored.status, crate::types::CandidateStatus::Finalized);
+    assert!(stored.finalized_at.is_some(), "finalized_at must be set");
 }

@@ -362,7 +362,24 @@ impl ResolutionContract {
 
         candidate.status = CandidateStatus::Finalized;
         candidate.finalized_at = Some(env.ledger().timestamp());
+        // Persist the Finalized status to storage BEFORE the cross-contract
+        // call so that any re-entrant or concurrent second finalize attempt
+        // on the same candidate_id is immediately rejected by the
+        // CandidateAlreadyFinalized guard above (exactly-once guarantee,
+        // Issue #577).
         storage::set_candidate(&env, &candidate);
+
+        // Double-check: re-read from storage to confirm the Finalized status
+        // was persisted before we proceed to the cross-contract call. This is
+        // defense-in-depth — if storage::set_candidate ever failed silently
+        // the cross-contract call would be skipped rather than firing twice.
+        {
+            let stored = storage::get_candidate(&env, candidate_id)
+                .ok_or(ContractError::CandidateNotFound)?;
+            if stored.status != CandidateStatus::Finalized {
+                return Err(ContractError::CandidateNotFound);
+            }
+        }
 
         // Refund the proposer's locked bond now that the candidate has
         // finalized successfully.
@@ -380,6 +397,8 @@ impl ResolutionContract {
         events::emit_candidate_finalized(&env, &candidate);
 
         // Cross-contract callback: resolve the market with the finalized outcome.
+        // The Finalized status is already persisted above, so a second call to
+        // finalize(candidate_id) will be rejected before reaching this point.
         let args: Vec<Val> = soroban_sdk::vec![
             &env,
             candidate.market_id.into_val(&env),
