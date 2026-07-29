@@ -170,6 +170,9 @@ impl TreasuryContract {
         let remaining = balance - amount;
         storage::set_token_balance(&env, &token, remaining);
 
+        let prev_total = storage::get_total_collected(&env)?;
+        storage::set_total_collected(&env, prev_total.checked_sub(amount).unwrap_or(0));
+
         events::emit_fees_withdrawn(&env, &token, &to, amount, remaining);
         Ok(())
     }

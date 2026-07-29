@@ -908,3 +908,21 @@ fn withdraw_fees_non_admin_returns_unauthorized() {
     // Verify no funds moved.
     assert_eq!(s.client.token_balance(&s.token), 100_000);
 }
+
+#[test]
+fn total_collected_invariant_after_collect_and_withdraw() {
+    let s = setup();
+    assert_eq!(s.client.total_collected(), 0);
+
+    fund_treasury(&s, 100_000);
+    s.client.collect_fee(&s.market, &s.token, &1u32, &100_000i128);
+    assert_eq!(s.client.total_collected(), 100_000);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw_fees(&s.admin, &s.token, &recipient, &40_000i128);
+    assert_eq!(s.client.total_collected(), 60_000);
+
+    s.client.withdraw_fees(&s.admin, &s.token, &recipient, &60_000i128);
+    assert_eq!(s.client.total_collected(), 0);
+}
+

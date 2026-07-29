@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useWallet } from "@/context/WalletContext";
-import { invokeContract, MARKET_CONTRACT_ID, amountToScVal, addressToScVal, u32ToScVal } from "@/lib/contract-client";
+import { invokeContract, MARKET_CONTRACT_ID, amountToScVal, addressToScVal, u32ToScVal, getPosition } from "@/lib/contract-client";
 import { TxResult } from "@/components/TxResult";
 import { useToast } from "@/context/ToastContext";
 import { parseContractError } from "@/lib/errors";
@@ -23,6 +23,23 @@ export function WithdrawForm({ onSuccess }: WithdrawFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [available, setAvailable] = useState<bigint | null>(null);
+
+  useEffect(() => {
+    if (address && marketId && !isNaN(parseInt(marketId))) {
+      getPosition(parseInt(marketId), address)
+        .then((pos) => {
+          if (pos) {
+            setAvailable(pos.totalDeposited - pos.lockedCollateral);
+          } else {
+            setAvailable(0n);
+          }
+        })
+        .catch(console.error);
+    } else {
+      setAvailable(null);
+    }
+  }, [address, marketId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,13 +59,20 @@ export function WithdrawForm({ onSuccess }: WithdrawFormProps) {
 
     try {
       // Convert amount to stroops (1 token = 10^7 stroops for USDC-like tokens)
-      const amountInStroops = Math.floor(parseFloat(amount) * 10_000_000).toString();
+      const amountInStroopsStr = Math.floor(parseFloat(amount) * 10_000_000).toString();
+      
+      if (available !== null && BigInt(amountInStroopsStr) > available) {
+        const availableTokens = Number(available) / 10_000_000;
+        setError(`Amount exceeds available collateral (${availableTokens})`);
+        setIsLoading(false);
+        return;
+      }
       
       // Prepare contract arguments for withdraw_unused_collateral(market_id: u32, user: Address, amount: i128)
       const args = [
         u32ToScVal(parseInt(marketId)),
         addressToScVal(address),
-        amountToScVal(amountInStroops),
+        amountToScVal(amountInStroopsStr),
       ];
 
       // Invoke the withdraw_unused_collateral method
