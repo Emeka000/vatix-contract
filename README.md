@@ -64,6 +64,18 @@ The Market contract uses storage versioning to ensure data integrity across upgr
 - Always bump version for: field changes, type changes, semantic changes to stored data
 - Migration is required when deploying with a new storage version
 
+### Treasury Storage
+
+- **[Treasury Storage Layout](docs/treasury-storage.md)** - Complete `StorageKey` reference for the Treasury contract, including:
+  - Every key, its storage tier (instance vs persistent), value type, and description
+  - Storage version history
+  - Notes on the version guard and fee token registry
+
+**Quick Reference:**
+- Current storage version: `3`
+- Always bump version for: field changes, type changes, semantic changes to stored data
+- Migration is required when deploying with a new storage version
+
 <!-- ## Project Status
 
 🚧 **Early Stage** - Contract architecture and specifications in progress -->
