@@ -68,13 +68,21 @@ mod events;
 pub mod oracle;
 #[cfg(feature = "oracle-adapter")]
 pub mod oracle_adapter;
-#[allow(dead_code)]
+// `positions` is called from `update_position` and `settle_position` inside the
+// `#[contractimpl]` block; the macro expansion hides the call-sites from Clippy's
+// dead-code analysis, so the allow is required to keep CI green.
+#[allow(dead_code)] // used via contractimpl macro expansion (positions::update_position, positions::calculate_locked_collateral)
 mod positions;
-#[allow(dead_code)]
+// `settlement` is called from `settle_position` and `batch_settle_positions` inside
+// the `#[contractimpl]` block; same macro-expansion visibility issue as `positions`.
+#[allow(dead_code)] // used via contractimpl macro expansion (settlement::settle_position, settlement::batch_settle)
 pub mod settlement;
 mod withdraw;
 
-#[allow(dead_code)]
+// `storage` is re-exported as `pub mod` for workspace integration tests and is
+// called throughout the `#[contractimpl]` methods; individual helpers that are
+// only exercised through tests are flagged by Clippy without this allow.
+#[allow(dead_code)] // pub-exported for integration tests; helpers used in contractimpl methods
 pub mod storage;
 mod test;
 #[cfg(test)]
@@ -82,7 +90,10 @@ mod withdraw_fuzz;
 #[cfg(test)]
 mod tests_vectors;
 pub mod types;
-#[allow(dead_code)]
+// `validation` helpers are called from `deposit`, `withdraw`, `positions`, and
+// `oracle` sub-modules; Clippy cannot trace cross-module usages through the
+// `#![no_std]` + macro context and reports the module as dead without this allow.
+#[allow(dead_code)] // called by deposit::deposit_collateral, withdraw::withdraw_unused_collateral, oracle::verify_market_outcome
 mod validation;
 
 use crate::error::ContractError;
