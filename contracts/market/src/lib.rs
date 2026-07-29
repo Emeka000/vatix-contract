@@ -1723,7 +1723,7 @@ impl MarketContract {
     /// - [`ContractError::MarketNotFound`] – no market with `market_id` exists
     ///
     /// # Events
-    /// Emits [`events::MarketClosedToDepositsEvent`] with `market_id`,
+    /// Emits [`events::MarketClosedToDeposits`] with `market_id`,
     /// `admin`, and `closed_at` timestamp so off-chain indexers can track
     /// when a market was locked.
     pub fn close_market_to_deposits(

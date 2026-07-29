@@ -71,7 +71,7 @@ pub fn emit_contract_initialized(env: &Env, admin: &Address) {
 /// Event emitted when the contract is paused or unpaused for emergency maintenance.
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct EmergencyPauseToggledEvent {
+pub struct EmergencyPauseToggled {
     #[topic]
     pub version: u32,
     #[topic]
@@ -82,7 +82,7 @@ pub struct EmergencyPauseToggledEvent {
 
 /// Emit event when the emergency pause flag is toggled.
 pub fn emit_emergency_pause_toggled(env: &Env, paused: bool) {
-    EmergencyPauseToggledEvent {
+    EmergencyPauseToggled {
         version: EVENT_VERSION,
         paused,
         timestamp: env.ledger().timestamp(),
@@ -283,7 +283,7 @@ pub fn emit_market_created(
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct MarketClosedToDepositsEvent {
+pub struct MarketClosedToDeposits {
     #[topic]
     pub version: u32,
     #[topic]
@@ -294,7 +294,7 @@ pub struct MarketClosedToDepositsEvent {
 
 /// Emit event when a market is closed to new deposits
 ///
-/// Publishes a [`MarketClosedToDepositsEvent`] to the Soroban event stream when
+/// Publishes a [`MarketClosedToDeposits`] to the Soroban event stream when
 /// an admin closes a market to prevent new collateral deposits. The event is indexed
 /// by `market_id` as a topic for efficient lookup by off-chain indexers.
 ///
@@ -314,7 +314,7 @@ pub fn emit_market_closed_to_deposits(
     admin: &Address,
     closed_at: u64,
 ) {
-    MarketClosedToDepositsEvent {
+    MarketClosedToDeposits {
         version: EVENT_VERSION,
         market_id,
         admin: admin.clone(),
@@ -985,7 +985,7 @@ pub fn emit_fee_rate_change_executed(env: &Env, new_rate_bps: i128, executed_at:
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct AdminRenounceProposedEvent {
+pub struct AdminRenounceProposed {
     #[topic]
     pub version: u32,
     #[topic]
@@ -994,7 +994,7 @@ pub struct AdminRenounceProposedEvent {
 }
 
 pub fn emit_admin_renounce_proposed(env: &Env, admin: &Address) {
-    AdminRenounceProposedEvent {
+    AdminRenounceProposed {
         version: EVENT_VERSION,
         admin: admin.clone(),
         proposed_at: env.ledger().timestamp(),
@@ -1004,7 +1004,7 @@ pub fn emit_admin_renounce_proposed(env: &Env, admin: &Address) {
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct AdminRenouncedEvent {
+pub struct AdminRenounced {
     #[topic]
     pub version: u32,
     #[topic]
@@ -1013,7 +1013,7 @@ pub struct AdminRenouncedEvent {
 }
 
 pub fn emit_admin_renounced(env: &Env, admin: &Address) {
-    AdminRenouncedEvent {
+    AdminRenounced {
         version: EVENT_VERSION,
         former_admin: admin.clone(),
         renounced_at: env.ledger().timestamp(),
