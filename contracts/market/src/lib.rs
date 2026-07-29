@@ -26,8 +26,8 @@
 //! |------------------------------------|---------------------------------|
 //! | `initialize`                       | anyone (once)                   |
 //! | `initialize_market` / set_*        | admin                           |
-//! | `deposit_collateral`               | any user                        |
-//! | `update_position`                  | any user (active market)        |
+//! | `deposit_collateral`               | any user (rejected if `closed_to_deposits`) |
+//! | `update_position`                  | any user (active market; rejected if `closed_to_deposits` **and** the trade would increase locked collateral — see `update_position`'s "Closed-to-deposits policy" docs) |
 //! | `withdraw_unused_collateral`       | any user                        |
 //! | `resolve_market` (oracle key)      | anyone (valid signature wins)   |
 //! | `resolve_market` (admin forced)    | admin (when oracle key is zero) |
@@ -840,6 +840,11 @@ impl MarketContract {
     ///   `tests/canceled_market_guard_test.rs` for coverage of this path.
     /// - [`ContractError::MarketExpired`] – current time exceeds market `end_time`
     /// - [`ContractError::InvalidPrice`] – `market_price` is outside valid range (0–10_000)
+    /// - [`ContractError::MarketClosedToDeposits`] – the market was closed via
+    ///   [`close_market_to_deposits`] and this call would increase locked
+    ///   collateral (open new exposure). Trades that keep the lock flat or
+    ///   reduce it (selling / closing out a position) are unaffected — only
+    ///   new exposure is blocked. See `# Closed-to-deposits policy` below.
     /// - [`ContractError::InsufficientCollateral`] – deposited collateral insufficient
     ///   to cover the increased locked amount
     /// - [`ContractError::InvalidShareAmount`] – deltas would result in negative share balance
@@ -871,10 +876,21 @@ impl MarketContract {
     /// );
     /// ```
     ///
+    /// # Closed-to-deposits policy
+    /// [`close_market_to_deposits`] blocks [`deposit_collateral`] outright, and
+    /// also blocks `update_position` calls that would *increase* locked
+    /// collateral (opening a new position or growing an existing one) — this
+    /// is the "no last-minute position changes" use case the admin flag is
+    /// for. Calls that keep the lock flat or reduce it (selling shares,
+    /// closing out part or all of a position) remain unaffected, since they
+    /// shed risk rather than add it and require no new deposit. Withdrawals
+    /// and settlement are never affected by `closed_to_deposits`.
+    ///
     /// # Security
     /// - Requires user authorization via `user.require_auth()`
     /// - Validates market is Active and not expired
     /// - Enforces collateral requirements before state changes
+    /// - Blocks new exposure once the market is closed to deposits
     /// - Prevents negative share balances
     /// - All state changes are atomic (succeed or revert together)
     pub fn update_position(
@@ -901,9 +917,15 @@ impl MarketContract {
         // 3. Validate the market price up front for a clear ContractError
         validation::validate_market_price(market_price)?;
 
-        // 4. Enforce that deposited collateral covers any increase in the lock.
-        //    Negative-share deltas are left for positions::update_position to
-        //    reject (it also emits a PositionLimitExceeded event).
+        // 4. Enforce that deposited collateral covers any increase in the lock,
+        //    and that a market closed to deposits cannot be used to open new
+        //    exposure. Trades that keep the lock flat or reduce it (selling /
+        //    closing out an existing position) are always allowed, even when
+        //    closed_to_deposits is set, since they reduce risk rather than add
+        //    it — only opening/increasing a position is "last-minute" new
+        //    exposure. Negative-share deltas are left for
+        //    positions::update_position to reject (it also emits a
+        //    PositionLimitExceeded event).
         let existing_position = storage::get_position(&env, market_id, &user)?;
         let position = existing_position
             .clone()
@@ -914,6 +936,9 @@ impl MarketContract {
             let prospective_locked =
                 positions::calculate_locked_collateral(new_yes, new_no, market_price);
             let lock_increased = prospective_locked > position.locked_collateral;
+            if lock_increased && market.closed_to_deposits {
+                return Err(ContractError::MarketClosedToDeposits);
+            }
             if lock_increased && prospective_locked > position.total_deposited {
                 return Err(ContractError::InsufficientCollateral);
             }
@@ -1779,13 +1804,22 @@ impl MarketContract {
         Ok(result)
     }
 
-    /// Prevent new collateral deposits into a market while preserving all
-    /// other functionality (trading, withdrawals, and settlement).
+    /// Prevent new collateral deposits into a market, and block
+    /// [`update_position`] calls that would open new exposure, while
+    /// preserving withdrawals and settlement.
     ///
-    /// Once closed, any call to [`deposit_collateral`] for this market will
-    /// return [`ContractError::MarketClosedToDeposits`]. The flag is
-    /// idempotent — calling this on an already-closed market is a no-op and
-    /// succeeds without error.
+    /// Once closed:
+    /// - Any call to [`deposit_collateral`] for this market returns
+    ///   [`ContractError::MarketClosedToDeposits`].
+    /// - Any call to [`update_position`] that would *increase* a user's
+    ///   locked collateral (opening or growing a position) also returns
+    ///   [`ContractError::MarketClosedToDeposits`]. Trades that keep the lock
+    ///   flat or reduce it (selling shares, closing out a position) still
+    ///   succeed, since they shed risk rather than add it.
+    /// - [`withdraw_unused_collateral`] and settlement are unaffected.
+    ///
+    /// The flag is idempotent — calling this on an already-closed market is a
+    /// no-op and succeeds without error.
     ///
     /// # Use cases
     /// - Lock down a market approaching its expiry to prevent last-minute

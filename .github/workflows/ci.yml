@@ -23,6 +23,15 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      # Caches the `target/` build directory (and `~/.cargo/registry`) so
+      # `cargo check`/`cargo test`/`cargo clippy` below reuse prior compiled
+      # dependency artifacts instead of rebuilding the workspace from scratch
+      # on every run. `Swatinem/rust-cache` derives its cache key from the
+      # job's OS, Rust toolchain version, and a hash of `Cargo.lock` (plus all
+      # workspace `Cargo.toml` files); the key changes automatically whenever
+      # a dependency is added/updated, so a stale cache is never restored
+      # against a changed lockfile. `workspaces: . -> target` scopes the cache
+      # to this repo's single Cargo workspace and its `target/` output dir.
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:

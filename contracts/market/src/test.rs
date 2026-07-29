@@ -1163,6 +1163,83 @@ mod test {
         client.update_position(&user, &market_id, &yes, &0i128, &6000i128);
     }
 
+    // ========== closed_to_deposits / update_position policy (Issue #601) ==========
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_update_position_rejects_new_exposure_when_closed_to_deposits() {
+        use crate::positions::STROOPS_PER_USDC;
+
+        let deposit = 100 * STROOPS_PER_USDC;
+        let (env, user, client, contract_id, market_id) = setup_funded_market(deposit);
+        let admin = env.as_contract(&contract_id, || storage::get_admin(&env).unwrap());
+
+        // Open an initial position while the market is still open to deposits.
+        let yes = 50 * STROOPS_PER_USDC;
+        client.update_position(&user, &market_id, &yes, &0i128, &6000i128);
+
+        client.close_market_to_deposits(&admin, &market_id);
+
+        // Buying more shares increases locked collateral (new exposure) and
+        // must be rejected once the market is closed to deposits.
+        client.update_position(&user, &market_id, &yes, &0i128, &6000i128);
+    }
+
+    #[test]
+    fn test_update_position_allows_reducing_position_when_closed_to_deposits() {
+        use crate::positions::STROOPS_PER_USDC;
+
+        let deposit = 100 * STROOPS_PER_USDC;
+        let (env, user, client, contract_id, market_id) = setup_funded_market(deposit);
+        let admin = env.as_contract(&contract_id, || storage::get_admin(&env).unwrap());
+
+        // Open an initial position while the market is still open to deposits.
+        let yes = 50 * STROOPS_PER_USDC;
+        client.update_position(&user, &market_id, &yes, &0i128, &6000i128);
+
+        client.close_market_to_deposits(&admin, &market_id);
+
+        // Selling shares reduces locked collateral and must still succeed —
+        // closing/reducing a position sheds risk rather than adding it.
+        let position = client.update_position(
+            &user,
+            &market_id,
+            &(-20 * STROOPS_PER_USDC),
+            &0i128,
+            &6000i128,
+        );
+        assert_eq!(position.yes_shares, 30 * STROOPS_PER_USDC);
+    }
+
+    #[test]
+    fn test_update_position_allows_flat_lock_when_closed_to_deposits() {
+        use crate::positions::STROOPS_PER_USDC;
+
+        let deposit = 100 * STROOPS_PER_USDC;
+        let (env, user, client, contract_id, market_id) = setup_funded_market(deposit);
+        let admin = env.as_contract(&contract_id, || storage::get_admin(&env).unwrap());
+
+        // Open a YES position at the 50% price point, then close the market
+        // to deposits. At exactly 50%, locked collateral is symmetric in
+        // yes/no excess (`scale_by_bps(x, 5000) == scale_by_bps(x, 10000-5000)`).
+        let yes = 50 * STROOPS_PER_USDC;
+        client.update_position(&user, &market_id, &yes, &0i128, &5000i128);
+        client.close_market_to_deposits(&admin, &market_id);
+
+        // Selling all YES shares and buying the equivalent NO shares keeps
+        // locked collateral exactly flat (not increased), so it is not
+        // blocked by closed_to_deposits.
+        let position = client.update_position(
+            &user,
+            &market_id,
+            &(-50 * STROOPS_PER_USDC),
+            &(50 * STROOPS_PER_USDC),
+            &5000i128,
+        );
+        assert_eq!(position.yes_shares, 0);
+        assert_eq!(position.no_shares, 50 * STROOPS_PER_USDC);
+    }
+
     // ========== set_fee_rate_bps / get_fee_rate_bps tests ==========
 
     #[test]
@@ -2195,6 +2272,7 @@ mod test {
             &end_time,
             &old_oracle_pubkey,
             &Address::generate(&env),
+            &None,
         );
 
         let message = crate::oracle::construct_oracle_message(&env, market_id, true);
@@ -2387,6 +2465,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         let market = client.get_market(&market_id);
@@ -2451,6 +2530,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Initially open to deposits.
@@ -2482,6 +2562,7 @@ mod test {
             &end_time,
             &oracle_pubkey,
             &collateral_token,
+            &None,
         );
 
         // Advance time past end_time so the market can be resolved.

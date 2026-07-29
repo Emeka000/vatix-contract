@@ -15,6 +15,18 @@ Core smart contracts powering Vatix prediction markets, written in Rust for the 
 | **Outcome Token** | `contracts/outcome-token` | ✅ Complete | Fungible SAC-compatible tokens representing YES/NO market outcomes |
 | **Resolution** | `contracts/resolution` | ✅ Complete | Standalone oracle-based outcome resolution with dispute window |
 
+### Outcome Token SAC metadata
+
+Each Outcome Token contract instance is initialized with SAC-compatible metadata, matching the `OutcomeTokenContract::initialize` / `set_metadata` implementation in `contracts/outcome-token/src/lib.rs`:
+
+| Field | Type | Source | Notes |
+|---|---|---|---|
+| `name` | `String` | Set at `initialize`, mutable via `set_metadata` (admin only) | Human-readable token name, e.g. `"Vatix YES Token"` |
+| `symbol` | `String` | Set at `initialize`, mutable via `set_metadata` (admin only) | Ticker symbol, e.g. `"vYES"` / `"vNO"` |
+| `decimals` | `u32` | Compile-time constant, not stored | Fixed at `7`, matching the Stellar Asset Contract (SAC) standard |
+
+`name`, `symbol`, and `decimals` are exposed via the `name()`, `symbol()`, and `decimals()` getters.
+
 ### Optional Market integrations
 
 The Market contract can optionally wire supporting modules via admin-configured contract addresses. Once registered:
