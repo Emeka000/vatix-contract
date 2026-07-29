@@ -54,8 +54,11 @@ pub enum ContractError {
 
     /// New collateral deposits are disabled for this market.
     ///
-    /// The admin has called `close_market_to_deposits`. Existing positions,
-    /// trades, and withdrawals continue to work normally.
+    /// The admin has called `close_market_to_deposits`. Deposits are blocked
+    /// outright, and `update_position` calls that would increase locked
+    /// collateral (opening new exposure) are also rejected. Trades that
+    /// reduce or hold the lock flat (closing/reducing a position) and
+    /// withdrawals continue to work normally.
     MarketClosedToDeposits = 6,
 
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
