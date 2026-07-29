@@ -312,24 +312,8 @@ fn cumulative_stays_high_after_withdrawal() {
 }
 
 // ── storage version guard (#307 / #308) ──────────────────────────────────────
-
-#[test]
-fn initialize_writes_storage_version() {
-    let s = setup();
-    s.env.as_contract(&s.treasury_id, || {
-        assert_eq!(storage::get_version(&s.env), Some(storage::STORAGE_VERSION));
-    });
-}
-
-#[test]
-fn storage_version_absent_before_initialize() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let id = env.register(TreasuryContract, ());
-    env.as_contract(&id, || {
-        assert_eq!(storage::get_version(&env), None);
-    });
-}
+// initialize_writes_storage_version / storage_version_absent_before_initialize
+// are defined earlier in this file — see above.
 
 #[test]
 fn reads_return_upgrade_required_on_stale_version() {
