@@ -88,7 +88,7 @@ pub fn close_market_to_deposits(env: Env, admin: Address, market_id: u32) -> Res
 
 **Event**:
 ```
-MarketClosedToDepositsEvent {
+MarketClosedToDeposits {
     market_id: u32,
     admin: Address,
     closed_at: u64,
@@ -185,6 +185,32 @@ cd ../treasury && cargo build
 cd ../outcome-token && cargo build
 cd ../resolution && cargo build
 ```
+
+### Panic Strategy (Soroban Contract Builds)
+
+The workspace `[profile.release]` (`Cargo.toml`) sets `panic = "abort"`. WASM
+has no stack-unwinding support, so a panicking contract call must abort
+(trap the VM) rather than unwind — this is required for `wasm32v1-none`
+output and also keeps release binaries smaller.
+
+This only applies to `--release` builds — the same profile `stellar contract
+build` and the deploy scripts use. The `dev`/`test` profiles that `cargo
+test`/`cargo check` build with still unwind by default, which is why a few
+integration tests (e.g. `tests/close_market_test.rs`) can use
+`std::panic::catch_unwind` to assert a call panics; that pattern only works
+against the host-run test binary, not a deployed (release) WASM contract.
+
+Smoke-test that a contract's release build still aborts on panic (useful
+after touching a crate's `Cargo.toml` or the workspace profile):
+
+```bash
+cd contracts/market
+RUSTFLAGS="-C panic=abort" cargo build --release --target wasm32v1-none
+```
+
+`RUSTFLAGS` is redundant with the workspace profile setting here — it's just
+an explicit way to confirm the setting is actually taking effect for a
+specific crate/target combination.
 
 ### Cargo Feature Flags
 
