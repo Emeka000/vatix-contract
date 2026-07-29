@@ -147,6 +147,16 @@ pub fn deposit_collateral(
     // Persist updated position
     storage::set_position(&env, market_id, &user, &position)?;
 
+    // Track first-time depositors in the MarketParticipants list (Issue #546 / #495).
+    //
+    // `add_market_participant` is idempotent — it performs a linear search
+    // before appending, so repeated deposits by the same user produce no
+    // duplicate entries. Calling it here (in addition to the call in
+    // `update_position`) ensures that users who deposit collateral but never
+    // execute a trade are still present in the list and will be reached by
+    // the paginated `settle_positions_page` settlement path.
+    storage::add_market_participant(&env, market_id, &user);
+
     // Record deposit timestamp for cooldown enforcement on withdrawals (issue #413).
     storage::set_last_deposit_time(&env, market_id, &user, env.ledger().timestamp());
 
