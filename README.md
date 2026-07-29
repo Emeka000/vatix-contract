@@ -39,6 +39,10 @@ See [`docs/cross-contract-call-graph.md`](docs/cross-contract-call-graph.md) for
 
 ## Documentation
 
+### Security
+
+Please review our [Security Policy](SECURITY.md) for information on reporting contract vulnerabilities.
+
 ### Storage Migrations
 
 The Market contract uses storage versioning to ensure data integrity across upgrades. See comprehensive documentation:
@@ -52,6 +56,8 @@ The Market contract uses storage versioning to ensure data integrity across upgr
   - Common pitfalls and solutions
   
 - **[Migration History](contracts/market/MIGRATION.md)** - Specific changes and data migration notes
+
+- **[Cross-Contract Upgrade Playbook](scripts/upgrade/UPGRADE_PLAYBOOK.md)** - Executable, multi-contract upgrade safety net covering Market, Treasury, Resolution, and Outcome Token together: deploy order, WASM hash pinning, the storage version compatibility matrix, a dual-read migration template for the next storage bump, a staging dry-run checklist, and rollback. Run `bash scripts/upgrade/check-upgrade.sh` for a scripted pass/fail dry-run; see the `upgrade-dry-run` CI job in `.github/workflows/ci.yml` for how it's enforced automatically.
 
 **Quick Reference:**
 - Current storage version: `3`
@@ -100,7 +106,7 @@ pub fn close_market_to_deposits(env: Env, admin: Address, market_id: u32) -> Res
 
 **Event**:
 ```
-MarketClosedToDepositsEvent {
+MarketClosedToDeposits {
     market_id: u32,
     admin: Address,
     closed_at: u64,
@@ -159,6 +165,10 @@ pnpm dev          # http://localhost:3002
 pnpm build:web
 ```
 
+> **Freighter wallet integration:** See [`docs/freighter-integration-guide.md`](docs/freighter-integration-guide.md)
+> for setup instructions, transaction signing flow, ScVal helpers, and
+> troubleshooting — including [network mismatch errors](docs/freighter-integration-guide.md#network-mismatch-errors-issue-587).
+
 ## Getting Started
 
 ### Prerequisites
@@ -197,6 +207,32 @@ cd ../treasury && cargo build
 cd ../outcome-token && cargo build
 cd ../resolution && cargo build
 ```
+
+### Panic Strategy (Soroban Contract Builds)
+
+The workspace `[profile.release]` (`Cargo.toml`) sets `panic = "abort"`. WASM
+has no stack-unwinding support, so a panicking contract call must abort
+(trap the VM) rather than unwind — this is required for `wasm32v1-none`
+output and also keeps release binaries smaller.
+
+This only applies to `--release` builds — the same profile `stellar contract
+build` and the deploy scripts use. The `dev`/`test` profiles that `cargo
+test`/`cargo check` build with still unwind by default, which is why a few
+integration tests (e.g. `tests/close_market_test.rs`) can use
+`std::panic::catch_unwind` to assert a call panics; that pattern only works
+against the host-run test binary, not a deployed (release) WASM contract.
+
+Smoke-test that a contract's release build still aborts on panic (useful
+after touching a crate's `Cargo.toml` or the workspace profile):
+
+```bash
+cd contracts/market
+RUSTFLAGS="-C panic=abort" cargo build --release --target wasm32v1-none
+```
+
+`RUSTFLAGS` is redundant with the workspace profile setting here — it's just
+an explicit way to confirm the setting is actually taking effect for a
+specific crate/target combination.
 
 ### Cargo Feature Flags
 

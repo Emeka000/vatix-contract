@@ -226,7 +226,7 @@ pub fn emit_fees_distributed(
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct TreasuryPausedEvent {
+pub struct TreasuryPaused {
     #[topic]
     pub admin: Address,
     pub paused_at: u64,
@@ -234,14 +234,14 @@ pub struct TreasuryPausedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct TreasuryUnpausedEvent {
+pub struct TreasuryUnpaused {
     #[topic]
     pub admin: Address,
     pub unpaused_at: u64,
 }
 
 pub fn emit_treasury_paused(env: &Env, admin: &Address) {
-    TreasuryPausedEvent {
+    TreasuryPaused {
         admin: admin.clone(),
         paused_at: env.ledger().timestamp(),
     }
@@ -249,7 +249,7 @@ pub fn emit_treasury_paused(env: &Env, admin: &Address) {
 }
 
 pub fn emit_treasury_unpaused(env: &Env, admin: &Address) {
-    TreasuryUnpausedEvent {
+    TreasuryUnpaused {
         admin: admin.clone(),
         unpaused_at: env.ledger().timestamp(),
     }
