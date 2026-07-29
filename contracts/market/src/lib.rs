@@ -1302,6 +1302,10 @@ impl MarketContract {
     /// disables threshold resolution.
     ///
     /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidThresholdQuorum`] — `quorum` exceeds
+    ///   `signers.len()`; such a quorum could never be satisfied.
     pub fn set_threshold_signers(
         env: Env,
         admin: Address,
@@ -1313,6 +1317,9 @@ impl MarketContract {
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
+        }
+        if quorum > signers.len() {
+            return Err(ContractError::InvalidThresholdQuorum);
         }
         storage::set_threshold_signers(&env, &signers);
         storage::set_threshold_quorum(&env, quorum);
@@ -1791,7 +1798,7 @@ impl MarketContract {
     /// - [`ContractError::MarketNotFound`] – no market with `market_id` exists
     ///
     /// # Events
-    /// Emits [`events::MarketClosedToDepositsEvent`] with `market_id`,
+    /// Emits [`events::MarketClosedToDeposits`] with `market_id`,
     /// `admin`, and `closed_at` timestamp so off-chain indexers can track
     /// when a market was locked.
     pub fn close_market_to_deposits(
