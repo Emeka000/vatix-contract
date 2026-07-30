@@ -39,29 +39,80 @@ use crate::types::{AdapterType, Market};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use soroban_sdk::{Bytes, BytesN, Env, Vec};
 
-/// Domain separator prepended to every oracle preimage before hashing.
-///
-/// Binds a signature to *this* message format so it cannot be reinterpreted
-/// under a different signing scheme that happens to consume the same raw
-/// `market_id`/`outcome` bytes.
+/// Domain separator prepended to legacy V1 oracle preimages before hashing.
 pub const ORACLE_DOMAIN_SEPARATOR: &[u8] = b"VATIX_ORACLE_V1";
 
-/// Exact width, in bytes, of the oracle preimage before hashing:
+/// Domain separator prepended to V2 oracle preimages before hashing.
+///
+/// Binds a signature to *this* V2 layout (including network, valid_until expiry, and market epoch)
+/// so signatures produced for testnet or other market states cannot be replayed.
+pub const ORACLE_DOMAIN_SEPARATOR_V2: &[u8] = b"VATIX_ORACLE_V2";
+
+/// Exact width, in bytes, of the legacy V1 oracle preimage before hashing:
 /// `domain_separator (15) || market_id_be (4) || outcome_byte (1)`.
 pub const ORACLE_PREIMAGE_LEN: usize = ORACLE_DOMAIN_SEPARATOR.len() + 4 + 1;
 
-/// Construct the message that the oracle signs.
+/// Exact width, in bytes, of the V2 oracle preimage before hashing:
+/// `domain_separator (15) || passphrase_hash (32) || market_id_be (4) || outcome_byte (1) || valid_until_be (8) || epoch_be (4)`.
+pub const ORACLE_PREIMAGE_LEN_V2: usize =
+    ORACLE_DOMAIN_SEPARATOR_V2.len() + 32 + 4 + 1 + 8 + 4;
+
+/// Construct the legacy V1 message that the oracle signs.
 ///
 /// Message format: `keccak256(domain_separator || market_id_be || outcome_byte)`
-/// - `domain_separator`: fixed ASCII tag, see [`ORACLE_DOMAIN_SEPARATOR`]
+/// - `domain_separator`: fixed ASCII tag `VATIX_ORACLE_V1`
 /// - `market_id`: u32 big-endian (4 bytes)
 /// - `outcome_byte`: `0x01` = YES, `0x00` = NO
-///
-/// The preimage built here is always exactly [`ORACLE_PREIMAGE_LEN`] bytes,
-/// so this can never panic or hash a truncated/oversized message.
 pub fn construct_oracle_message(env: &Env, market_id: u32, outcome: bool) -> BytesN<32> {
     let preimage = build_oracle_preimage(env, market_id, outcome);
     env.crypto().keccak256(&preimage).into()
+}
+
+/// Construct the V2 message that the oracle signs.
+///
+/// Message format: `keccak256(domain_separator || network_passphrase_hash || market_id_be || outcome_byte || valid_until_be || epoch_be)`
+/// - `domain_separator`: fixed ASCII tag `VATIX_ORACLE_V2` (15 bytes)
+/// - `network_passphrase_hash`: 32 bytes SHA-256 / Keccak-256 hash of network passphrase (or network_id)
+/// - `market_id`: u32 big-endian (4 bytes)
+/// - `outcome_byte`: `0x01` = YES, `0x00` = NO (1 byte)
+/// - `valid_until`: u64 big-endian timestamp in seconds (8 bytes)
+/// - `epoch`: u32 big-endian market resolution epoch/nonce (4 bytes)
+pub fn construct_oracle_message_v2(
+    env: &Env,
+    passphrase_hash: &BytesN<32>,
+    market_id: u32,
+    outcome: bool,
+    valid_until: u64,
+    epoch: u32,
+) -> BytesN<32> {
+    let preimage = build_oracle_preimage_v2(
+        env,
+        passphrase_hash,
+        market_id,
+        outcome,
+        valid_until,
+        epoch,
+    );
+    env.crypto().keccak256(&preimage).into()
+}
+
+/// Build the raw (pre-hash) V2 oracle preimage bytes.
+pub fn build_oracle_preimage_v2(
+    env: &Env,
+    passphrase_hash: &BytesN<32>,
+    market_id: u32,
+    outcome: bool,
+    valid_until: u64,
+    epoch: u32,
+) -> Bytes {
+    let mut preimage = Bytes::new(env);
+    preimage.append(&Bytes::from_slice(env, ORACLE_DOMAIN_SEPARATOR_V2));
+    preimage.append(&Bytes::from_slice(env, passphrase_hash.to_array().as_slice()));
+    preimage.append(&Bytes::from_slice(env, &market_id.to_be_bytes()));
+    preimage.append(&Bytes::from_slice(env, &[u8::from(outcome)]));
+    preimage.append(&Bytes::from_slice(env, &valid_until.to_be_bytes()));
+    preimage.append(&Bytes::from_slice(env, &epoch.to_be_bytes()));
+    preimage
 }
 
 /// Build the raw (pre-hash) oracle preimage bytes.
@@ -155,6 +206,50 @@ pub fn verify_oracle_signature(
     }
 
     let message = construct_oracle_message(env, market_id, outcome);
+    if !verify_ed25519_safe(oracle_pubkey, &message, signature) {
+        return Err(ContractError::InvalidSignature);
+    }
+
+    Ok(())
+}
+
+/// Verify that a V2 oracle signature is valid for a market resolution.
+///
+/// Checks:
+/// 1. `oracle_pubkey` is non-zero.
+/// 2. `env.ledger().timestamp() <= valid_until` (signature has not expired).
+/// 3. Ed25519 signature verifies against `construct_oracle_message_v2(...)`.
+///
+/// # Errors
+/// - [`ContractError::UnauthorizedOracle`] if `oracle_pubkey` is the zero key.
+/// - [`ContractError::InvalidSignature`] if signature expired or ed25519 verification fails.
+pub fn verify_oracle_signature_v2(
+    env: &Env,
+    passphrase_hash: &BytesN<32>,
+    market_id: u32,
+    outcome: bool,
+    valid_until: u64,
+    epoch: u32,
+    signature: &BytesN<64>,
+    oracle_pubkey: &BytesN<32>,
+) -> Result<(), ContractError> {
+    if oracle_pubkey == &BytesN::from_array(env, &[0u8; 32]) {
+        return Err(ContractError::UnauthorizedOracle);
+    }
+
+    if env.ledger().timestamp() > valid_until {
+        return Err(ContractError::InvalidSignature);
+    }
+
+    let message = construct_oracle_message_v2(
+        env,
+        passphrase_hash,
+        market_id,
+        outcome,
+        valid_until,
+        epoch,
+    );
+
     if !verify_ed25519_safe(oracle_pubkey, &message, signature) {
         return Err(ContractError::InvalidSignature);
     }
