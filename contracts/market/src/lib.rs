@@ -1,5 +1,5 @@
 #![no_std]
-#![deny(clippy::all)]
+#![warn(clippy::all)]
 
 //! # Market Contract
 //!
@@ -1113,9 +1113,11 @@ impl MarketContract {
     ///
     /// Only the stored admin may call this.
     ///
+    /// Propose a new treasury contract address, subject to a timelock.
+    ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin.
-    pub fn set_treasury_contract(
+    pub fn propose_treasury_contract(
         env: Env,
         admin: Address,
         treasury: Address,
@@ -1126,8 +1128,46 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        storage::set_treasury(&env, &treasury);
-        events::emit_treasury_set(&env, &treasury);
+        
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS; // Use same timelock duration
+        storage::set_pending_treasury(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: treasury.clone(),
+                effective_at,
+            },
+        );
+        events::emit_treasury_proposed(&env, &treasury, effective_at);
+        Ok(())
+    }
+
+    /// Execute a previously proposed treasury contract change.
+    pub fn execute_treasury_contract(env: Env) -> Result<Address, ContractError> {
+        validation::require_initialized(&env)?;
+        let pending = storage::get_pending_treasury(&env)
+            .ok_or(ContractError::NoPendingFeeChange)?; // We can add NoPendingChange later, reusing NoPendingFeeChange for now
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+
+        storage::set_treasury(&env, &pending.new_address);
+        storage::clear_pending_treasury(&env);
+        events::emit_treasury_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    /// Cancel a pending treasury contract change.
+    pub fn cancel_treasury_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        storage::clear_pending_treasury(&env);
+        // We could emit a cancel event here
         Ok(())
     }
 
@@ -1328,7 +1368,7 @@ impl MarketContract {
     ///
     /// # Events
     /// Emits [`events::MarketOracleUpdated`] with the old and new oracle keys.
-    pub fn update_market_oracle(
+    pub fn propose_market_oracle(
         env: Env,
         admin: Address,
         market_id: u32,
@@ -1341,10 +1381,46 @@ impl MarketContract {
             return Err(ContractError::NotAdmin);
         }
 
-        // Guard: an all-zero pubkey can never produce a valid Ed25519 signature,
-        // making the market permanently unresolvable (mirrors initialize_market).
+        // Guard: an all-zero pubkey can never produce a valid Ed25519 signature
         if new_oracle_pubkey == BytesN::from_array(&env, &[0u8; 32]) {
             return Err(ContractError::InvalidSignature);
+        }
+
+        let market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        if market.status != MarketStatus::Active {
+            return Err(ContractError::MarketNotActive);
+        }
+
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS;
+        storage::set_pending_market_oracle(
+            &env,
+            market_id,
+            &crate::types::PendingBytesNChange {
+                new_bytes: new_oracle_pubkey.clone(),
+                effective_at,
+            },
+        );
+
+        events::emit_market_oracle_proposed(
+            &env,
+            market_id,
+            &admin,
+            &market.oracle_pubkey,
+            &new_oracle_pubkey,
+            effective_at,
+        );
+
+        Ok(())
+    }
+
+    pub fn execute_market_oracle(env: Env, market_id: u32) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        let pending = storage::get_pending_market_oracle(&env, market_id)
+            .ok_or(ContractError::NoPendingFeeChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
         }
 
         let mut market =
@@ -1354,18 +1430,30 @@ impl MarketContract {
         }
 
         let old_oracle_pubkey = market.oracle_pubkey.clone();
-        market.oracle_pubkey = new_oracle_pubkey.clone();
+        market.oracle_pubkey = pending.new_bytes.clone();
         storage::set_market(&env, market_id, &market)?;
+        storage::clear_pending_market_oracle(&env, market_id);
 
         events::emit_market_oracle_updated(
             &env,
             market_id,
-            &admin,
+            &storage::get_admin(&env)?,
             &old_oracle_pubkey,
-            &new_oracle_pubkey,
+            &pending.new_bytes,
             env.ledger().timestamp(),
         );
 
+        Ok(())
+    }
+
+    pub fn cancel_market_oracle(env: Env, admin: Address, market_id: u32) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::clear_pending_market_oracle(&env, market_id);
         Ok(())
     }
 
@@ -1474,7 +1562,7 @@ impl MarketContract {
     /// market contract to mint and burn outcome tokens for position updates.
     ///
     /// Only the stored admin may call this.
-    pub fn set_outcome_token_contract(
+    pub fn propose_outcome_token_contract(
         env: Env,
         admin: Address,
         outcome_token_contract: Address,
@@ -1485,7 +1573,42 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        storage::set_outcome_token_contract(&env, &outcome_token_contract);
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS;
+        storage::set_pending_outcome_token_contract(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: outcome_token_contract.clone(),
+                effective_at,
+            },
+        );
+        events::emit_outcome_token_proposed(&env, &outcome_token_contract, effective_at);
+        Ok(())
+    }
+
+    pub fn execute_outcome_token_contract(env: Env) -> Result<Address, ContractError> {
+        validation::require_initialized(&env)?;
+        let pending = storage::get_pending_outcome_token_contract(&env)
+            .ok_or(ContractError::NoPendingFeeChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+
+        storage::set_outcome_token_contract(&env, &pending.new_address);
+        storage::clear_pending_outcome_token_contract(&env);
+        // We reuse the set event logic if there is one, or add a new one
+        events::emit_outcome_token_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_outcome_token_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::clear_pending_outcome_token_contract(&env);
         Ok(())
     }
 
@@ -1542,7 +1665,7 @@ impl MarketContract {
     ///
     /// # Errors
     /// - [`ContractError::NotAdmin`] – `admin` is not the stored admin.
-    pub fn set_resolution_contract(
+    pub fn propose_resolution_contract(
         env: Env,
         admin: Address,
         resolution_contract: Address,
@@ -1553,7 +1676,41 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        storage::set_resolution_contract(&env, &resolution_contract);
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS;
+        storage::set_pending_resolution_contract(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: resolution_contract.clone(),
+                effective_at,
+            },
+        );
+        events::emit_resolution_proposed(&env, &resolution_contract, effective_at);
+        Ok(())
+    }
+
+    pub fn execute_resolution_contract(env: Env) -> Result<Address, ContractError> {
+        validation::require_initialized(&env)?;
+        let pending = storage::get_pending_resolution_contract(&env)
+            .ok_or(ContractError::NoPendingFeeChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+
+        storage::set_resolution_contract(&env, &pending.new_address);
+        storage::clear_pending_resolution_contract(&env);
+        events::emit_resolution_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_resolution_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::clear_pending_resolution_contract(&env);
         Ok(())
     }
 

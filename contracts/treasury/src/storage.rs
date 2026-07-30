@@ -38,9 +38,19 @@ pub enum StorageKey {
     /// through `collect_fee` (#484). Lets callers enumerate which tokens hold
     /// a balance without needing prior knowledge of the token address.
     FeeTokens,
+    PendingMarketContract,
+    PendingAdmin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingAddressChange {
+    pub new_address: Address,
+    pub effective_at: u64,
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────
+
 
 pub fn set_version(env: &Env) {
     env.storage()
@@ -82,6 +92,18 @@ pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&StorageKey::Admin, admin);
 }
 
+pub fn get_pending_admin(env: &Env) -> Option<PendingAddressChange> {
+    env.storage().instance().get(&StorageKey::PendingAdmin)
+}
+
+pub fn set_pending_admin(env: &Env, pending: &PendingAddressChange) {
+    env.storage().instance().set(&StorageKey::PendingAdmin, pending);
+}
+
+pub fn clear_pending_admin(env: &Env) {
+    env.storage().instance().remove(&StorageKey::PendingAdmin);
+}
+
 // ── Authorized markets registry ───────────────────────────────────────────────
 //
 // Note: fixed alongside #484 (multi-token fee collection) since this file was
@@ -114,6 +136,18 @@ pub fn get_authorized_market(env: &Env) -> Result<Address, TreasuryError> {
 
 pub fn is_authorized_market(env: &Env, market: &Address) -> bool {
     get_authorized_markets(env).contains(market)
+}
+
+pub fn get_pending_market_contract(env: &Env) -> Option<PendingAddressChange> {
+    env.storage().instance().get(&StorageKey::PendingMarketContract)
+}
+
+pub fn set_pending_market_contract(env: &Env, pending: &PendingAddressChange) {
+    env.storage().instance().set(&StorageKey::PendingMarketContract, pending);
+}
+
+pub fn clear_pending_market_contract(env: &Env) {
+    env.storage().instance().remove(&StorageKey::PendingMarketContract);
 }
 
 // ── Token balance (current, decreasable on withdrawal) ────────────────────────

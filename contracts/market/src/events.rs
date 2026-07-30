@@ -1122,6 +1122,119 @@ pub fn emit_fee_waiver_removed(env: &Env, account: &Address, admin: &Address) {
     .publish(env);
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TreasuryProposed {
+    #[topic]
+    pub version: u32,
+    pub treasury: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_treasury_proposed(env: &Env, treasury: &Address, effective_at: u64) {
+    TreasuryProposed {
+        version: EVENT_VERSION,
+        treasury: treasury.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct OutcomeTokenProposed {
+    #[topic]
+    pub version: u32,
+    pub outcome_token: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_outcome_token_proposed(env: &Env, outcome_token: &Address, effective_at: u64) {
+    OutcomeTokenProposed {
+        version: EVENT_VERSION,
+        outcome_token: outcome_token.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct OutcomeTokenSet {
+    #[topic]
+    pub version: u32,
+    pub outcome_token: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_outcome_token_set(env: &Env, outcome_token: &Address) {
+    OutcomeTokenSet {
+        version: EVENT_VERSION,
+        outcome_token: outcome_token.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ResolutionProposed {
+    #[topic]
+    pub version: u32,
+    pub resolution: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_resolution_proposed(env: &Env, resolution: &Address, effective_at: u64) {
+    ResolutionProposed {
+        version: EVENT_VERSION,
+        resolution: resolution.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ResolutionSet {
+    #[topic]
+    pub version: u32,
+    pub resolution: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_resolution_set(env: &Env, resolution: &Address) {
+    ResolutionSet {
+        version: EVENT_VERSION,
+        resolution: resolution.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketOracleProposed {
+    #[topic]
+    pub market_id: u32,
+    pub admin: Address,
+    pub old_oracle_pubkey: BytesN<32>,
+    pub new_oracle_pubkey: BytesN<32>,
+    pub effective_at: u64,
+}
+
+pub fn emit_market_oracle_proposed(
+    env: &Env,
+    market_id: u32,
+    admin: &Address,
+    old_oracle_pubkey: &BytesN<32>,
+    new_oracle_pubkey: &BytesN<32>,
+    effective_at: u64,
+) {
+    MarketOracleProposed {
+        market_id,
+        admin: admin.clone(),
+        old_oracle_pubkey: old_oracle_pubkey.clone(),
+        new_oracle_pubkey: new_oracle_pubkey.clone(),
+        effective_at,
+    }.publish(env);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
