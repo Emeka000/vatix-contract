@@ -105,6 +105,22 @@ pub enum StorageKey {
     PendingOutcomeToken,
     PendingResolution,
     PendingMarketOracle(u32),
+    /// Flag indicating whether legacy V1 oracle signatures are disabled.
+    /// Admin-controlled toggle for mainnet security compliance.
+    OracleV1Disabled,
+}
+
+pub fn set_oracle_v1_disabled(env: &Env, disabled: bool) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::OracleV1Disabled, &disabled);
+}
+
+pub fn is_oracle_v1_disabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&StorageKey::OracleV1Disabled)
+        .unwrap_or(false)
 }
 
 // --- Version helpers ---
