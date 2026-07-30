@@ -148,7 +148,19 @@ pub fn withdraw_unused_collateral(
         return Err(ContractError::InsufficientCollateral);
     }
 
-    // 7. Route fee to treasury if one is registered.
+  // 7. Update state & persist position FIRST (CEI Pattern)
+    let total_deducted = amount
+        .checked_add(fee_amount)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+
+    position.total_deposited = position
+        .total_deposited
+        .checked_sub(total_deducted)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+
+    storage::set_position(&env, market_id, &user, &position)?;
+
+    // 8. Route fee to treasury if one is registered (External Calls)
     let contract_address = env.current_contract_address();
     let token_client = TokenClient::new(&env, &market.collateral_token);
 
@@ -169,26 +181,14 @@ pub fn withdraw_unused_collateral(
                 args,
             );
         } else {
-            // Treasury-optional path: skip the transfer, do NOT revert the
-            // withdrawal. The fee stays in the contract's own collateral
-            // token balance (it is already subtracted from `total_deposited`
-            // below), and we emit an explicit event so this is never a
-            // silent drop. See the module docs for the full rationale.
             emit_fee_retained_no_treasury(&env, market_id, &user, fee_amount);
         }
     }
 
-    // 8. Deduct both withdrawal and fee from total_deposited.
-    let total_deducted = amount
-        .checked_add(fee_amount)
-        .ok_or(ContractError::ArithmeticOverflow)?;
-    position.total_deposited = position
-        .total_deposited
-        .checked_sub(total_deducted)
-        .ok_or(ContractError::ArithmeticOverflow)?;
+    // 9. Transfer the requested amount to the user
+    token_client.transfer(&contract_address, &user, &amount);
 
-    storage::set_position(&env, market_id, &user, &position)?;
-
+  
     // 9. Transfer the requested amount to the user.
     token_client.transfer(&contract_address, &user, &amount);
 

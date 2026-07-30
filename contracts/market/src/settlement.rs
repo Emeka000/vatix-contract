@@ -194,6 +194,8 @@ pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128
     // payout, marks the position settled, and emits the PositionSettled event.
     let payout = execute_settlement(env, &mut position, &market)?;
 
+     storage::set_position(env, market_id, user, &position)?;
+
     burn_settled_outcome_tokens(env, market_id, user, &position);
 
     // Persist the settled position before paying out.
