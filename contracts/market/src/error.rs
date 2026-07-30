@@ -212,6 +212,14 @@ pub enum ContractError {
     /// Ensure the user has sufficient balance and has approved the contract.
     TokenTransferFailed = 50,
 
+    /// A user's `Position` shares and their `OutcomeToken` balances have
+    /// diverged for this market (dual-ledger reconciliation guard).
+    ///
+    /// Trading and settlement are blocked for this user/market until an
+    /// admin repairs the divergence via `reconcile_position_tokens`. See
+    /// `contracts/market/src/reconciliation.rs`.
+    PositionTokenMismatch = 51,
+
     // ========== Arithmetic Errors (60-69) ==========
     /// Arithmetic operation overflowed.
     ///
@@ -297,6 +305,7 @@ mod tests {
         assert_eq!(ContractError::RenounceAlreadyProposed as u32, 45);
         assert_eq!(ContractError::FeeCapExceeded as u32, 46);
         assert_eq!(ContractError::TokenTransferFailed as u32, 50);
+        assert_eq!(ContractError::PositionTokenMismatch as u32, 51);
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
         assert_eq!(ContractError::UpgradeRequired as u32, 70);
         assert_eq!(ContractError::ResolutionNotFinalized as u32, 80);
@@ -366,6 +375,7 @@ mod tests {
             (ContractError::RenounceAlreadyProposed, 45),
             (ContractError::FeeCapExceeded, 46),
             (ContractError::TokenTransferFailed, 50),
+            (ContractError::PositionTokenMismatch, 51),
             (ContractError::ArithmeticOverflow, 60),
             (ContractError::UpgradeRequired, 70),
             (ContractError::ResolutionNotFinalized, 80),

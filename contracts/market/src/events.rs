@@ -25,6 +25,8 @@
 //! | `AdminTransferProposed`  | `admin_transfer_proposed`           |
 //! | `AdminTransferAccepted`  | `admin_transfer_accepted`           |
 //! | `AdminTransferCanceled`  | `admin_transfer_canceled`           |
+//! | `PositionTokenMismatchDetected` | `position_token_mismatch_detected` |
+//! | `PositionTokensReconciled`      | `position_tokens_reconciled`       |
 //!
 //! # Event schema versioning (Issue #500)
 //!

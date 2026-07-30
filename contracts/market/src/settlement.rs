@@ -64,8 +64,18 @@ fn validate_payout(payout: i128) -> Result<(), ContractError> {
 /// single-user path) or a single aggregated event for a whole batch
 /// (`batch_settle_positions`, Issue #499) without duplicating the
 /// settlement math.
-fn compute_settlement(position: &mut Position, market: &Market) -> Result<i128, ContractError> {
+fn compute_settlement(
+    env: &Env,
+    position: &mut Position,
+    market: &Market,
+) -> Result<i128, ContractError> {
     validate_settlement_eligibility(position, market)?;
+
+    // Dual-ledger reconciliation guard (see `crate::reconciliation`): refuse
+    // to settle a position whose Position shares and OutcomeToken balances
+    // have diverged. An admin must repair via `reconcile_position_tokens`
+    // first — there is no silent re-sync on this path.
+    crate::reconciliation::assert_position_token_parity(env, position.market_id, &position.user)?;
 
     // Support a "no-winner" refund path: when a market is marked as
     // `Resolved` but `result` is `None` we treat the settlement as a full
@@ -119,7 +129,7 @@ pub fn execute_settlement(
     position: &mut Position,
     market: &Market,
 ) -> Result<i128, ContractError> {
-    let payout = compute_settlement(position, market)?;
+    let payout = compute_settlement(env, position, market)?;
 
     // Emit PositionUpdated so indexers observe the share balance zeroing out
     // on settlement (yes_shares and no_shares are consumed; locked_collateral
@@ -258,7 +268,7 @@ pub fn batch_settle_positions(
 
         // Skip already-settled positions and any unexpected state. No event
         // is emitted per-user here; one aggregated event covers the batch.
-        let Ok(payout) = compute_settlement(&mut position, &market) else {
+        let Ok(payout) = compute_settlement(env, &mut position, &market) else {
             continue;
         };
 
@@ -348,7 +358,7 @@ pub fn settle_positions_page(
             continue;
         };
 
-        let Ok(payout) = compute_settlement(&mut position, &market) else {
+        let Ok(payout) = compute_settlement(env, &mut position, &market) else {
             continue;
         };
 
