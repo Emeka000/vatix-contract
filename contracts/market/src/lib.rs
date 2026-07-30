@@ -38,6 +38,7 @@
 //! | `close_market_to_deposits`         | admin                           |
 //! | `set_resolution_contract`          | admin                           |
 //! | `set_fee_cap`                      | admin                           |
+//! | `void_market`                      | registered resolution contract  |
 //!
 //! ## Storage layout
 //!
