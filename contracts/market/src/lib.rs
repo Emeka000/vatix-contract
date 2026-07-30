@@ -1650,6 +1650,96 @@ impl MarketContract {
     /// # Errors
     /// - [`ContractError::InvalidThresholdQuorum`] — `quorum` exceeds
     ///   `signers.len()`; such a quorum could never be satisfied.
+    /// Propose a threshold signer set and quorum update, subject to timelock (#665).
+    pub fn propose_threshold_signers(
+        env: Env,
+        admin: Address,
+        signers: soroban_sdk::Vec<BytesN<32>>,
+        quorum: u32,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        let signers_len = signers.len();
+        if quorum == 0 || signers_len == 0 || quorum > signers_len {
+            return Err(ContractError::InvalidThresholdQuorum);
+        }
+        let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS;
+        storage::set_pending_threshold_signers(
+            &env,
+            &crate::types::PendingThresholdSignersChange {
+                signers,
+                quorum,
+                effective_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Execute a previously proposed threshold signers update (#665).
+    pub fn execute_threshold_signers(env: Env) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        let pending = storage::get_pending_threshold_signers(&env)
+            .ok_or(ContractError::NoPendingFeeChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+
+        let signers_len = pending.signers.len();
+        if pending.quorum == 0 || signers_len == 0 || pending.quorum > signers_len {
+            return Err(ContractError::InvalidThresholdQuorum);
+        }
+
+        storage::set_threshold_signers(&env, &pending.signers);
+        storage::set_threshold_quorum(&env, pending.quorum);
+        storage::clear_pending_threshold_signers(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending threshold signers update (#665).
+    pub fn cancel_threshold_signers(env: Env, admin: Address) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::clear_pending_threshold_signers(&env);
+        Ok(())
+    }
+
+    /// Configure per-market threshold signers and quorum override (#665).
+    pub fn set_market_threshold_signers(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        signers: soroban_sdk::Vec<BytesN<32>>,
+        quorum: u32,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        if market.status != MarketStatus::Active {
+            return Err(ContractError::MarketNotActive);
+        }
+        let signers_len = signers.len();
+        if quorum == 0 || signers_len == 0 || quorum > signers_len {
+            return Err(ContractError::InvalidThresholdQuorum);
+        }
+        storage::set_market_threshold_signers(&env, market_id, &signers);
+        storage::set_market_threshold_quorum(&env, market_id, quorum);
+        Ok(())
+    }
+
+    /// Legacy immediate set_threshold_signers retained for test backward compatibility.
     pub fn set_threshold_signers(
         env: Env,
         admin: Address,
@@ -1662,7 +1752,8 @@ impl MarketContract {
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        if quorum > signers.len() {
+        let signers_len = signers.len();
+        if quorum == 0 || signers_len == 0 || quorum > signers_len {
             return Err(ContractError::InvalidThresholdQuorum);
         }
         storage::set_threshold_signers(&env, &signers);
@@ -1680,17 +1771,7 @@ impl MarketContract {
         storage::get_threshold_quorum(&env)
     }
 
-    /// Resolve a market using a quorum of oracle signatures (#378).
-    ///
-    /// Callers provide one signature per registered signer (use 64 zero bytes
-    /// for signers whose signature is unavailable). The market resolves once
-    /// the valid-signature count reaches the stored quorum.
-    ///
-    /// # Errors
-    /// - [`ContractError::MarketNotFound`] — market does not exist.
-    /// - [`ContractError::MarketAlreadyResolved`] — already resolved.
-    /// - [`ContractError::UnauthorizedOracle`] — no signers/quorum configured.
-    /// - [`ContractError::InvalidSignature`] — fewer than quorum valid sigs.
+    /// Resolve a market using a quorum of oracle signatures (#378, #665).
     pub fn resolve_market_threshold(
         env: Env,
         resolver: Address,
@@ -1707,10 +1788,73 @@ impl MarketContract {
             return Err(ContractError::MarketAlreadyResolved);
         }
 
-        let signers = storage::get_threshold_signers(&env);
-        let quorum = storage::get_threshold_quorum(&env);
+        let signers = storage::get_market_threshold_signers(&env, market_id)
+            .unwrap_or_else(|| storage::get_threshold_signers(&env));
+        let quorum = storage::get_market_threshold_quorum(&env, market_id)
+            .unwrap_or_else(|| storage::get_threshold_quorum(&env));
 
         oracle::verify_threshold_signatures(&env, market_id, outcome, &signers, &signatures, quorum)?;
+        events::emit_oracle_signature_verified(&env, market_id, outcome, env.ledger().timestamp());
+
+        market.status = MarketStatus::Resolved;
+        market.result = Some(outcome);
+        market.resolver = Some(resolver.clone());
+        let resolved_at = env.ledger().timestamp();
+        market.resolved_at = Some(resolved_at);
+        storage::set_market(&env, market_id, &market)?;
+
+        events::emit_market_resolved(
+            &env,
+            market_id,
+            &market.oracle_pubkey,
+            &resolver,
+            outcome,
+            resolved_at,
+        );
+
+        Ok(())
+    }
+
+    /// Resolve a market using V2 threshold signatures (#665).
+    pub fn resolve_market_threshold_v2(
+        env: Env,
+        resolver: Address,
+        market_id: u32,
+        outcome: bool,
+        valid_until: u64,
+        epoch: u32,
+        signatures: soroban_sdk::Vec<BytesN<64>>,
+        passphrase_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        validation::require_not_paused(&env)?;
+        resolver.require_auth();
+
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        if market.status == MarketStatus::Resolved {
+            return Err(ContractError::MarketAlreadyResolved);
+        }
+
+        if env.ledger().timestamp() > valid_until {
+            return Err(ContractError::OracleMessageExpired);
+        }
+
+        let signers = storage::get_market_threshold_signers(&env, market_id)
+            .unwrap_or_else(|| storage::get_threshold_signers(&env));
+        let quorum = storage::get_market_threshold_quorum(&env, market_id)
+            .unwrap_or_else(|| storage::get_threshold_quorum(&env));
+
+        oracle::verify_threshold_signatures_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+            &signers,
+            &signatures,
+            quorum,
+        )?;
         events::emit_oracle_signature_verified(&env, market_id, outcome, env.ledger().timestamp());
 
         market.status = MarketStatus::Resolved;
