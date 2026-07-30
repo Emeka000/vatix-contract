@@ -441,7 +441,7 @@ impl TreasuryContract {
     /// in the authorized-markets registry). Returns `NotInitialized` if no
     /// market has ever been registered.
     pub fn market_contract(env: Env) -> Result<Address, TreasuryError> {
-        storage::get_authorized_markets(&env)?
+        storage::get_authorized_markets(&env)
             .get(0)
             .ok_or(TreasuryError::NotInitialized)
     }
@@ -453,7 +453,7 @@ impl TreasuryContract {
 
     /// Return every market contract currently authorized to call `collect_fee`.
     pub fn list_markets(env: Env) -> Result<Vec<Address>, TreasuryError> {
-        storage::get_authorized_markets(&env)
+        Ok(storage::get_authorized_markets(&env))
     }
 
     /// Return every distinct token mint that has ever had a fee collected for it (#484).

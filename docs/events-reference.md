@@ -52,6 +52,8 @@ events additionally carry a `version: u32 (topic)` field
 | `oracle_adapter_configured` | `adapter_type: AdapterType (topic)`, `enabled: bool`, `configured_at: u64` | The admin enables/disables the Reflector or Pyth oracle adapter |
 | `fee_waiver_added` | `account: Address (topic)`, `admin: Address`, `added_at: u64` | The admin adds an address to the withdrawal fee waiver list |
 | `fee_waiver_removed` | `account: Address (topic)`, `admin: Address`, `removed_at: u64` | The admin removes an address from the fee waiver list |
+| `position_token_mismatch_detected` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `yes_shares: i128`, `no_shares: i128`, `yes_token_balance: i128`, `no_token_balance: i128` | The reconciliation guard finds a user's `Position` shares and `OutcomeToken` balances have diverged (raised before `update_position`/`settle_position` reject) |
+| `position_tokens_reconciled` | `version: u32 (topic)`, `market_id: u32 (topic)`, `user: Address (topic)`, `admin: Address`, `yes_delta_applied: i128`, `no_delta_applied: i128`, `reconciled_at: u64` | An admin repairs a Position/OutcomeToken divergence via `reconcile_position_tokens` (deltas are the signed mint/burn applied to the OutcomeToken balance) |
 
 ## Treasury (`contracts/treasury/src/events.rs`)
 

@@ -25,6 +25,8 @@
 //! | `AdminTransferProposed`  | `admin_transfer_proposed`           |
 //! | `AdminTransferAccepted`  | `admin_transfer_accepted`           |
 //! | `AdminTransferCanceled`  | `admin_transfer_canceled`           |
+//! | `PositionTokenMismatchDetected` | `position_token_mismatch_detected` |
+//! | `PositionTokensReconciled`      | `position_tokens_reconciled`       |
 //!
 //! # Event schema versioning (Issue #500)
 //!
@@ -1084,6 +1086,90 @@ pub fn emit_fee_waiver_removed(env: &Env, account: &Address, admin: &Address) {
         account: account.clone(),
         admin: admin.clone(),
         removed_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ── Position / OutcomeToken reconciliation ────────────────────────────────────
+
+/// Emitted whenever the [`crate::reconciliation`] guard detects that a
+/// user's `Position` shares and `OutcomeToken` balances have diverged for a
+/// market. Raised by both `update_position` and the settlement entry points
+/// before they reject the call.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PositionTokenMismatchDetected {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub user: Address,
+    pub yes_shares: i128,
+    pub no_shares: i128,
+    pub yes_token_balance: i128,
+    pub no_token_balance: i128,
+}
+
+/// Emit a [`PositionTokenMismatchDetected`] event.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_position_token_mismatch_detected(
+    env: &Env,
+    market_id: u32,
+    user: &Address,
+    yes_shares: i128,
+    no_shares: i128,
+    yes_token_balance: i128,
+    no_token_balance: i128,
+) {
+    PositionTokenMismatchDetected {
+        version: EVENT_VERSION,
+        market_id,
+        user: user.clone(),
+        yes_shares,
+        no_shares,
+        yes_token_balance,
+        no_token_balance,
+    }
+    .publish(env);
+}
+
+/// Emitted when an admin repairs a Position/OutcomeToken divergence via
+/// `reconcile_position_tokens`. `yes_delta_applied`/`no_delta_applied` are
+/// the signed mint (positive) or burn (negative) applied to the
+/// OutcomeToken balance to bring it back in line with `Position`.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PositionTokensReconciled {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub user: Address,
+    pub admin: Address,
+    pub yes_delta_applied: i128,
+    pub no_delta_applied: i128,
+    pub reconciled_at: u64,
+}
+
+/// Emit a [`PositionTokensReconciled`] event.
+pub fn emit_position_tokens_reconciled(
+    env: &Env,
+    market_id: u32,
+    user: &Address,
+    admin: &Address,
+    yes_delta_applied: i128,
+    no_delta_applied: i128,
+) {
+    PositionTokensReconciled {
+        version: EVENT_VERSION,
+        market_id,
+        user: user.clone(),
+        admin: admin.clone(),
+        yes_delta_applied,
+        no_delta_applied,
+        reconciled_at: env.ledger().timestamp(),
     }
     .publish(env);
 }

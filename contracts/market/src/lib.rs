@@ -72,6 +72,8 @@ pub mod oracle_adapter;
 #[allow(dead_code)]
 mod positions;
 #[allow(dead_code)]
+pub mod reconciliation;
+#[allow(dead_code)]
 pub mod settlement;
 mod withdraw;
 
@@ -869,6 +871,12 @@ impl MarketContract {
         // 3. Validate the market price up front for a clear ContractError
         validation::validate_market_price(market_price)?;
 
+        // 3b. Dual-ledger reconciliation guard (see `reconciliation` module
+        //     docs): refuse to trade if this user's Position shares and
+        //     OutcomeToken balances have already diverged for this market.
+        //     An admin must repair via `reconcile_position_tokens` first.
+        reconciliation::assert_position_token_parity(&env, market_id, &user)?;
+
         // 4. Enforce that deposited collateral covers any increase in the lock.
         //    Negative-share deltas are left for positions::update_position to
         //    reject (it also emits a PositionLimitExceeded event).
@@ -1417,6 +1425,51 @@ impl MarketContract {
     /// Return the registered outcome-token contract address, if any.
     pub fn get_outcome_token_contract(env: Env) -> Option<Address> {
         storage::get_outcome_token_contract(&env)
+    }
+
+    /// Compare a user's stored `Position` shares against their
+    /// `OutcomeToken` balances for `market_id` (dual-ledger reconciliation
+    /// view — see `reconciliation` module docs).
+    ///
+    /// Read-only; callable by anyone (auditors, indexers, or a user checking
+    /// their own account). When no outcome-token contract is registered the
+    /// two ledgers cannot diverge, so parity is always reported as matched.
+    pub fn get_position_token_parity(
+        env: Env,
+        market_id: u32,
+        user: Address,
+    ) -> Result<reconciliation::PositionTokenParity, ContractError> {
+        reconciliation::get_position_token_parity(&env, market_id, &user)
+    }
+
+    /// Admin-gated repair for a Position/OutcomeToken divergence detected via
+    /// [`Self::get_position_token_parity`] (or surfaced as a
+    /// [`ContractError::PositionTokenMismatch`] rejection from
+    /// `update_position`/`settle_position`).
+    ///
+    /// Mints or burns the user's `OutcomeToken` balances so they match the
+    /// stored `Position` — `Position` is the source of truth (see
+    /// `reconciliation` module docs). No-op if the ledgers already agree.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    ///
+    /// # Events
+    /// Emits `PositionTokensReconciled` with the signed mint/burn deltas
+    /// applied, whenever a repair actually occurs.
+    pub fn reconcile_position_tokens(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        user: Address,
+    ) -> Result<reconciliation::PositionTokenParity, ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        reconciliation::reconcile_position_tokens(&env, &admin, market_id, &user)
     }
 
     /// Register the resolution contract that gates `resolve_market`.

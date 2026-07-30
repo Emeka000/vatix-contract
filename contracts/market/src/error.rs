@@ -110,6 +110,10 @@ pub enum ContractError {
     /// node network may be temporarily disconnected.
     OraclePriceUnavailable = 23,
 
+    /// `set_threshold_signers` was called with `quorum > signers.len()`
+    /// (#378) — such a quorum could never be satisfied.
+    InvalidThresholdQuorum = 25,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///
@@ -193,6 +197,14 @@ pub enum ContractError {
     /// Ensure the user has sufficient balance and has approved the contract.
     TokenTransferFailed = 50,
 
+    /// A user's `Position` shares and their `OutcomeToken` balances have
+    /// diverged for this market (dual-ledger reconciliation guard).
+    ///
+    /// Trading and settlement are blocked for this user/market until an
+    /// admin repairs the divergence via `reconcile_position_tokens`. See
+    /// `contracts/market/src/reconciliation.rs`.
+    PositionTokenMismatch = 51,
+
     // ========== Arithmetic Errors (60-69) ==========
     /// Arithmetic operation overflowed.
     ///
@@ -259,6 +271,7 @@ mod tests {
         assert_eq!(ContractError::UnauthorizedOracle as u32, 21);
         assert_eq!(ContractError::InvalidOutcome as u32, 22);
         assert_eq!(ContractError::OraclePriceUnavailable as u32, 23);
+        assert_eq!(ContractError::InvalidThresholdQuorum as u32, 25);
         assert_eq!(ContractError::InvalidPrice as u32, 30);
         assert_eq!(ContractError::InvalidQuantity as u32, 31);
         assert_eq!(ContractError::InvalidTimestamp as u32, 32);
@@ -276,6 +289,7 @@ mod tests {
         assert_eq!(ContractError::RenounceAlreadyProposed as u32, 45);
         assert_eq!(ContractError::FeeCapExceeded as u32, 46);
         assert_eq!(ContractError::TokenTransferFailed as u32, 50);
+        assert_eq!(ContractError::PositionTokenMismatch as u32, 51);
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
         assert_eq!(ContractError::UpgradeRequired as u32, 70);
         assert_eq!(ContractError::ResolutionNotFinalized as u32, 80);
@@ -326,6 +340,7 @@ mod tests {
             (ContractError::UnauthorizedOracle, 21),
             (ContractError::InvalidOutcome, 22),
             (ContractError::OraclePriceUnavailable, 23),
+            (ContractError::InvalidThresholdQuorum, 25),
             (ContractError::InvalidPrice, 30),
             (ContractError::InvalidQuantity, 31),
             (ContractError::InvalidTimestamp, 32),
@@ -343,6 +358,7 @@ mod tests {
             (ContractError::RenounceAlreadyProposed, 45),
             (ContractError::FeeCapExceeded, 46),
             (ContractError::TokenTransferFailed, 50),
+            (ContractError::PositionTokenMismatch, 51),
             (ContractError::ArithmeticOverflow, 60),
             (ContractError::UpgradeRequired, 70),
             (ContractError::ResolutionNotFinalized, 80),
