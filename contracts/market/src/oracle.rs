@@ -1187,6 +1187,68 @@ mod threshold_tests {
             Ok(())
         );
     }
+
+    #[test]
+    fn threshold_rejects_duplicate_signers() {
+        let env = Env::default();
+        let (pk1, sig1) = sign(&env, 1, true);
+
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pk1.clone());
+        signers.push_back(pk1); // Duplicate signer
+
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig1.clone());
+        sigs.push_back(sig1);
+
+        assert_eq!(
+            verify_threshold_signatures(&env, 1, true, &signers, &sigs, 2),
+            Err(ContractError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn threshold_rejects_quorum_exceeding_signers_count() {
+        let env = Env::default();
+        let (pk1, sig1) = sign(&env, 1, true);
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pk1);
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig1);
+
+        // Quorum 2 > signers.len() 1
+        assert_eq!(
+            verify_threshold_signatures(&env, 1, true, &signers, &sigs, 2),
+            Err(ContractError::UnauthorizedOracle)
+        );
+    }
+
+    #[test]
+    fn threshold_rejects_equivocating_signer_signing_opposite_outcome() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        let env = Env::default();
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        // Signer produces a signature over the OPPOSITE outcome (NO)
+        let opposite_msg = construct_oracle_message(&env, 10, false);
+        let sig_opposite = signing_key.sign(opposite_msg.to_array().as_slice());
+        let sig_bytes = BytesN::from_array(&env, &sig_opposite.to_bytes());
+
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pubkey);
+
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig_bytes);
+
+        // Submitting opposite signature when verifying outcome YES must be rejected
+        assert_eq!(
+            verify_threshold_signatures(&env, 10, true, &signers, &sigs, 1),
+            Err(ContractError::InvalidSignature)
+        );
+    }
 }
 
 #[cfg(test)]
