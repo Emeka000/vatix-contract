@@ -54,8 +54,11 @@ pub enum ContractError {
 
     /// New collateral deposits are disabled for this market.
     ///
-    /// The admin has called `close_market_to_deposits`. Existing positions,
-    /// trades, and withdrawals continue to work normally.
+    /// The admin has called `close_market_to_deposits`. Deposits are blocked
+    /// outright, and `update_position` calls that would increase locked
+    /// collateral (opening new exposure) are also rejected. Trades that
+    /// reduce or hold the lock flat (closing/reducing a position) and
+    /// withdrawals continue to work normally.
     MarketClosedToDeposits = 6,
 
     /// Withdraw attempted before the cooldown period since the last deposit has elapsed.
@@ -110,6 +113,14 @@ pub enum ContractError {
     /// node network may be temporarily disconnected.
     OraclePriceUnavailable = 23,
 
+    /// The oracle message has an `expires_at` deadline that has already
+    /// passed. Signed outcomes cannot be replayed after their stated
+    /// deadline — submit a freshly signed message instead.
+    OracleMessageExpired = 24,
+
+    /// The requested threshold is invalid (e.g., higher than signer count or zero).
+    InvalidThresholdQuorum = 25,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///
@@ -152,6 +163,14 @@ pub enum ContractError {
     /// Fee rate is invalid (e.g. exceeds the configured fee cap or is out of range).
     InvalidFeeRate = 38,
 
+    /// Fee waiver account is invalid (a contract address, or the admin itself).
+    ///
+    /// The admin-managed fee waiver list (#483) may only hold ordinary user
+    /// accounts. Contract addresses are rejected the same way `InvalidAdmin`
+    /// rejects them, and the admin's own address is rejected so the admin
+    /// cannot quietly exempt itself from withdrawal fees it controls (#584).
+    InvalidFeeWaiverAccount = 39,
+
     // ========== Authorization Errors (40-49) ==========
     /// Caller is not authorized to perform this action.
     ///
@@ -192,6 +211,14 @@ pub enum ContractError {
     ///
     /// Ensure the user has sufficient balance and has approved the contract.
     TokenTransferFailed = 50,
+
+    /// A user's `Position` shares and their `OutcomeToken` balances have
+    /// diverged for this market (dual-ledger reconciliation guard).
+    ///
+    /// Trading and settlement are blocked for this user/market until an
+    /// admin repairs the divergence via `reconcile_position_tokens`. See
+    /// `contracts/market/src/reconciliation.rs`.
+    PositionTokenMismatch = 51,
 
     // ========== Arithmetic Errors (60-69) ==========
     /// Arithmetic operation overflowed.
@@ -267,6 +294,7 @@ mod tests {
         assert_eq!(ContractError::UnauthorizedOracle as u32, 21);
         assert_eq!(ContractError::InvalidOutcome as u32, 22);
         assert_eq!(ContractError::OraclePriceUnavailable as u32, 23);
+        assert_eq!(ContractError::OracleMessageExpired as u32, 24);
         assert_eq!(ContractError::InvalidPrice as u32, 30);
         assert_eq!(ContractError::InvalidQuantity as u32, 31);
         assert_eq!(ContractError::InvalidTimestamp as u32, 32);
@@ -276,6 +304,7 @@ mod tests {
         assert_eq!(ContractError::BelowMinDeposit as u32, 36);
         assert_eq!(ContractError::InvalidMetadataUri as u32, 37);
         assert_eq!(ContractError::InvalidFeeRate as u32, 38);
+        assert_eq!(ContractError::InvalidFeeWaiverAccount as u32, 39);
         assert_eq!(ContractError::Unauthorized as u32, 40);
         assert_eq!(ContractError::NotAdmin as u32, 41);
         assert_eq!(ContractError::AlreadyInitialized as u32, 42);
@@ -284,6 +313,7 @@ mod tests {
         assert_eq!(ContractError::RenounceAlreadyProposed as u32, 45);
         assert_eq!(ContractError::FeeCapExceeded as u32, 46);
         assert_eq!(ContractError::TokenTransferFailed as u32, 50);
+        assert_eq!(ContractError::PositionTokenMismatch as u32, 51);
         assert_eq!(ContractError::ArithmeticOverflow as u32, 60);
         assert_eq!(ContractError::UpgradeRequired as u32, 70);
         assert_eq!(ContractError::ResolutionNotFinalized as u32, 80);
@@ -334,6 +364,7 @@ mod tests {
             (ContractError::UnauthorizedOracle, 21),
             (ContractError::InvalidOutcome, 22),
             (ContractError::OraclePriceUnavailable, 23),
+            (ContractError::OracleMessageExpired, 24),
             (ContractError::InvalidPrice, 30),
             (ContractError::InvalidQuantity, 31),
             (ContractError::InvalidTimestamp, 32),
@@ -343,6 +374,7 @@ mod tests {
             (ContractError::BelowMinDeposit, 36),
             (ContractError::InvalidMetadataUri, 37),
             (ContractError::InvalidFeeRate, 38),
+            (ContractError::InvalidFeeWaiverAccount, 39),
             (ContractError::Unauthorized, 40),
             (ContractError::NotAdmin, 41),
             (ContractError::AlreadyInitialized, 42),
@@ -351,6 +383,7 @@ mod tests {
             (ContractError::RenounceAlreadyProposed, 45),
             (ContractError::FeeCapExceeded, 46),
             (ContractError::TokenTransferFailed, 50),
+            (ContractError::PositionTokenMismatch, 51),
             (ContractError::ArithmeticOverflow, 60),
             (ContractError::UpgradeRequired, 70),
             (ContractError::ResolutionNotFinalized, 80),

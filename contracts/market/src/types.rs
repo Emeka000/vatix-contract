@@ -133,6 +133,32 @@ pub struct PendingFeeRateChange {
     pub effective_at: u64,
 }
 
+/// An address change awaiting its timelock delay before it can take effect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingAddressChange {
+    pub new_address: Address,
+    pub effective_at: u64,
+}
+
+/// An adapter type change awaiting its timelock delay before it can take effect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingAdapterTypeChange {
+    pub new_adapter: AdapterType,
+    pub effective_at: u64,
+}
+
+/// A 32-byte change (like oracle pubkey) awaiting its timelock delay before it can take effect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingBytesNChange {
+    pub new_bytes: BytesN<32>,
+    pub effective_at: u64,
+}
+
+
+
 impl Position {
     /// Create an empty position for a user in a market.
     /// Used when a position has not been previously recorded in storage.
