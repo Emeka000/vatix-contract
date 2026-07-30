@@ -654,6 +654,166 @@ mod tests {
         assert_eq!(result, Err(ContractError::InvalidSignature));
     }
 
+    /// Generate an ed25519 keypair and sign V2 message `construct_oracle_message_v2`.
+    fn generate_keypair_and_sign_v2(
+        env: &Env,
+        passphrase_hash: &BytesN<32>,
+        market_id: u32,
+        outcome: bool,
+        valid_until: u64,
+        epoch: u32,
+    ) -> (BytesN<32>, BytesN<64>) {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let message = construct_oracle_message_v2(
+            env,
+            passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+        );
+        let signature = signing_key.sign(message.to_array().as_slice());
+
+        (
+            BytesN::from_array(env, &signing_key.verifying_key().to_bytes()),
+            BytesN::from_array(env, &signature.to_bytes()),
+        )
+    }
+
+    #[test]
+    fn test_v2_signature_verification_success() {
+        let env = Env::default();
+        let passphrase_hash = BytesN::from_array(&env, &[100u8; 32]);
+        let market_id = 10u32;
+        let outcome = true;
+        let valid_until = 1000u64;
+        let epoch = 1u32;
+
+        let (pubkey, signature) = generate_keypair_and_sign_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+        );
+
+        let result = verify_oracle_signature_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+            &signature,
+            &pubkey,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_v2_signature_cross_network_rejection() {
+        let env = Env::default();
+        let mainnet_passphrase_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let testnet_passphrase_hash = BytesN::from_array(&env, &[2u8; 32]);
+        let market_id = 10u32;
+        let outcome = true;
+        let valid_until = 1000u64;
+        let epoch = 1u32;
+
+        // Signature generated on testnet
+        let (pubkey, signature) = generate_keypair_and_sign_v2(
+            &env,
+            &testnet_passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+        );
+
+        // Verify on mainnet must fail
+        let result = verify_oracle_signature_v2(
+            &env,
+            &mainnet_passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+            &signature,
+            &pubkey,
+        );
+        assert_eq!(result, Err(ContractError::InvalidSignature));
+    }
+
+    #[test]
+    fn test_v2_signature_expired_valid_until_rejection() {
+        let env = Env::default();
+        env.ledger().set_timestamp(500);
+
+        let passphrase_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let market_id = 10u32;
+        let outcome = true;
+        let valid_until = 400u64; // expired relative to ledger timestamp 500
+        let epoch = 1u32;
+
+        let (pubkey, signature) = generate_keypair_and_sign_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+        );
+
+        let result = verify_oracle_signature_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+            &signature,
+            &pubkey,
+        );
+        assert_eq!(result, Err(ContractError::InvalidSignature));
+    }
+
+    #[test]
+    fn test_v2_signature_epoch_mismatch_rejection() {
+        let env = Env::default();
+        let passphrase_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let market_id = 10u32;
+        let outcome = true;
+        let valid_until = 1000u64;
+        let epoch = 1u32;
+
+        // Signature produced for epoch 1
+        let (pubkey, signature) = generate_keypair_and_sign_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+        );
+
+        // Verification with epoch 2 must fail
+        let result = verify_oracle_signature_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            2u32,
+            &signature,
+            &pubkey,
+        );
+        assert_eq!(result, Err(ContractError::InvalidSignature));
+    }
+
     /// Export a deterministic test vector so the backend signer can validate
     /// its keccak256 + Ed25519 implementation against the on-chain format.
     ///
