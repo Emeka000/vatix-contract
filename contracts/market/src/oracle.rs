@@ -316,6 +316,49 @@ pub fn verify_market_outcome(
     }
 }
 
+/// Verify that the market outcome is valid using V2 oracle signatures.
+pub fn verify_market_outcome_v2(
+    env: &Env,
+    passphrase_hash: &BytesN<32>,
+    market_id: u32,
+    market: &Market,
+    adapter_type: AdapterType,
+    outcome: bool,
+    valid_until: u64,
+    epoch: u32,
+    proof: &BytesN<64>,
+) -> Result<(), ContractError> {
+    match adapter_type {
+        AdapterType::Ed25519 => verify_oracle_signature_v2(
+            env,
+            passphrase_hash,
+            market_id,
+            outcome,
+            valid_until,
+            epoch,
+            proof,
+            &market.oracle_pubkey,
+        ),
+        AdapterType::Reflector | AdapterType::Pyth => {
+            if crate::storage::is_adapter_enabled(env, &adapter_type) {
+                Err(ContractError::UnauthorizedOracle)
+            } else {
+                // Adapter disabled/unavailable — fall back to raw Ed25519 V2 verification.
+                verify_oracle_signature_v2(
+                    env,
+                    passphrase_hash,
+                    market_id,
+                    outcome,
+                    valid_until,
+                    epoch,
+                    proof,
+                    &market.oracle_pubkey,
+                )
+            }
+        }
+    }
+}
+
 /// Verify a quorum of Ed25519 signatures for multi-signer threshold resolution (#378).
 ///
 /// `signatures` is a parallel slice aligned with `signers`: `signatures[i]` is
@@ -343,6 +386,51 @@ pub fn verify_threshold_signatures(
     }
 
     let message = construct_oracle_message(env, market_id, outcome);
+    let mut valid: u32 = 0;
+
+    let len = signers.len().min(signatures.len());
+    for i in 0..len {
+        let pubkey = signers.get(i).unwrap();
+        let sig = signatures.get(i).unwrap();
+        if verify_ed25519_safe(&pubkey, &message, &sig) {
+            valid += 1;
+            if valid >= quorum {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(ContractError::InvalidSignature)
+}
+
+/// Verify a quorum of V2 Ed25519 signatures for multi-signer threshold resolution.
+pub fn verify_threshold_signatures_v2(
+    env: &Env,
+    passphrase_hash: &BytesN<32>,
+    market_id: u32,
+    outcome: bool,
+    valid_until: u64,
+    epoch: u32,
+    signers: &soroban_sdk::Vec<BytesN<32>>,
+    signatures: &soroban_sdk::Vec<BytesN<64>>,
+    quorum: u32,
+) -> Result<(), ContractError> {
+    if signers.is_empty() || quorum == 0 {
+        return Err(ContractError::UnauthorizedOracle);
+    }
+
+    if env.ledger().timestamp() > valid_until {
+        return Err(ContractError::InvalidSignature);
+    }
+
+    let message = construct_oracle_message_v2(
+        env,
+        passphrase_hash,
+        market_id,
+        outcome,
+        valid_until,
+        epoch,
+    );
     let mut valid: u32 = 0;
 
     let len = signers.len().min(signatures.len());

@@ -552,6 +552,73 @@ impl MarketContract {
         Ok(())
     }
 
+    /// Resolve a market with V2 oracle-signed outcome (binding network passphrase, expiry, and market epoch)
+    pub fn resolve_market_v2(
+        env: Env,
+        resolver: Address,
+        market_id: String,
+        outcome: bool,
+        valid_until: u64,
+        epoch: u32,
+        signature: BytesN<64>,
+        passphrase_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        validation::require_not_paused(&env)?;
+        validation::require_emergency_mode_allows(
+            &env,
+            &[
+                crate::types::EmergencyMode::Normal,
+                crate::types::EmergencyMode::TradingHalted,
+            ],
+        )?;
+        resolver.require_auth();
+        let market_id = validation::parse_market_id(&market_id)?;
+
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+
+        if market.status == MarketStatus::Resolved {
+            return Err(ContractError::MarketAlreadyResolved);
+        }
+
+        if env.ledger().timestamp() > valid_until {
+            return Err(ContractError::OracleMessageExpired);
+        }
+
+        require_resolution_finalized(&env, market_id, outcome, &signature)?;
+
+        oracle::verify_market_outcome_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            &market,
+            market.adapter_type.clone(),
+            outcome,
+            valid_until,
+            epoch,
+            &signature,
+        )?;
+        events::emit_oracle_signature_verified(&env, market_id, outcome, env.ledger().timestamp());
+
+        market.status = MarketStatus::Resolved;
+        market.result = Some(outcome);
+        market.resolver = Some(resolver.clone());
+        let resolved_at = env.ledger().timestamp();
+        market.resolved_at = Some(resolved_at);
+        storage::set_market(&env, market_id, &market)?;
+
+        events::emit_market_resolved(
+            &env,
+            market_id,
+            &market.oracle_pubkey,
+            &resolver,
+            outcome,
+            resolved_at,
+        );
+
+        Ok(())
+    }
+
     /// Verify an oracle signature for `(market_id, outcome)` without mutating
     /// any state (#489).
     ///
@@ -584,6 +651,30 @@ impl MarketContract {
             &market,
             market.adapter_type.clone(),
             outcome,
+            &signature,
+        )
+    }
+
+    /// Verify a V2 oracle signature for `(market_id, outcome)` without mutating any state.
+    pub fn verify_signature_v2(
+        env: Env,
+        passphrase_hash: BytesN<32>,
+        market_id: u32,
+        outcome: bool,
+        valid_until: u64,
+        epoch: u32,
+        signature: BytesN<64>,
+    ) -> Result<(), ContractError> {
+        let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        oracle::verify_market_outcome_v2(
+            &env,
+            &passphrase_hash,
+            market_id,
+            &market,
+            market.adapter_type.clone(),
+            outcome,
+            valid_until,
+            epoch,
             &signature,
         )
     }
