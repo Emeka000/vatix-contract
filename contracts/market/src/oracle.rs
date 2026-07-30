@@ -375,18 +375,35 @@ pub fn verify_threshold_signatures(
     signatures: &soroban_sdk::Vec<BytesN<64>>,
     quorum: u32,
 ) -> Result<(), ContractError> {
-    if signers.is_empty() || quorum == 0 {
+    let signers_len = signers.len();
+    if signers.is_empty() || quorum == 0 || quorum > signers_len {
         return Err(ContractError::UnauthorizedOracle);
     }
 
-    let message = construct_oracle_message(env, market_id, outcome);
+    // Invariant check: reject duplicate signer entries (equivocation / double counting safeguard)
+    for i in 0..signers_len {
+        for j in (i + 1)..signers_len {
+            if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                return Err(ContractError::InvalidSignature);
+            }
+        }
+    }
+
+    let message_target = construct_oracle_message(env, market_id, outcome);
+    let message_opposite = construct_oracle_message(env, market_id, !outcome);
     let mut valid: u32 = 0;
 
-    let len = signers.len().min(signatures.len());
+    let len = signers_len.min(signatures.len() as u32) as usize;
     for i in 0..len {
-        let pubkey = signers.get(i).unwrap();
-        let sig = signatures.get(i).unwrap();
-        if verify_ed25519_safe(&pubkey, &message, &sig) {
+        let pubkey = signers.get(i as u32).unwrap();
+        let sig = signatures.get(i as u32).unwrap();
+
+        // Equivocation check: reject if signer signed the opposite outcome
+        if verify_ed25519_safe(&pubkey, &message_opposite, &sig) {
+            return Err(ContractError::InvalidSignature);
+        }
+
+        if verify_ed25519_safe(&pubkey, &message_target, &sig) {
             valid += 1;
             if valid >= quorum {
                 return Ok(());
@@ -409,7 +426,8 @@ pub fn verify_threshold_signatures_v2(
     signatures: &soroban_sdk::Vec<BytesN<64>>,
     quorum: u32,
 ) -> Result<(), ContractError> {
-    if signers.is_empty() || quorum == 0 {
+    let signers_len = signers.len();
+    if signers.is_empty() || quorum == 0 || quorum > signers_len {
         return Err(ContractError::UnauthorizedOracle);
     }
 
@@ -417,7 +435,16 @@ pub fn verify_threshold_signatures_v2(
         return Err(ContractError::InvalidSignature);
     }
 
-    let message = construct_oracle_message_v2(
+    // Invariant check: reject duplicate signer entries
+    for i in 0..signers_len {
+        for j in (i + 1)..signers_len {
+            if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                return Err(ContractError::InvalidSignature);
+            }
+        }
+    }
+
+    let message_target = construct_oracle_message_v2(
         env,
         passphrase_hash,
         market_id,
@@ -425,13 +452,27 @@ pub fn verify_threshold_signatures_v2(
         valid_until,
         epoch,
     );
+    let message_opposite = construct_oracle_message_v2(
+        env,
+        passphrase_hash,
+        market_id,
+        !outcome,
+        valid_until,
+        epoch,
+    );
     let mut valid: u32 = 0;
 
-    let len = signers.len().min(signatures.len());
+    let len = signers_len.min(signatures.len() as u32) as usize;
     for i in 0..len {
-        let pubkey = signers.get(i).unwrap();
-        let sig = signatures.get(i).unwrap();
-        if verify_ed25519_safe(&pubkey, &message, &sig) {
+        let pubkey = signers.get(i as u32).unwrap();
+        let sig = signatures.get(i as u32).unwrap();
+
+        // Equivocation check: reject if signer signed opposite outcome
+        if verify_ed25519_safe(&pubkey, &message_opposite, &sig) {
+            return Err(ContractError::InvalidSignature);
+        }
+
+        if verify_ed25519_safe(&pubkey, &message_target, &sig) {
             valid += 1;
             if valid >= quorum {
                 return Ok(());
@@ -1144,6 +1185,68 @@ mod threshold_tests {
         assert_eq!(
             verify_threshold_signatures(&env, 42, false, &signers, &sigs, 1),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn threshold_rejects_duplicate_signers() {
+        let env = Env::default();
+        let (pk1, sig1) = sign(&env, 1, true);
+
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pk1.clone());
+        signers.push_back(pk1); // Duplicate signer
+
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig1.clone());
+        sigs.push_back(sig1);
+
+        assert_eq!(
+            verify_threshold_signatures(&env, 1, true, &signers, &sigs, 2),
+            Err(ContractError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn threshold_rejects_quorum_exceeding_signers_count() {
+        let env = Env::default();
+        let (pk1, sig1) = sign(&env, 1, true);
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pk1);
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig1);
+
+        // Quorum 2 > signers.len() 1
+        assert_eq!(
+            verify_threshold_signatures(&env, 1, true, &signers, &sigs, 2),
+            Err(ContractError::UnauthorizedOracle)
+        );
+    }
+
+    #[test]
+    fn threshold_rejects_equivocating_signer_signing_opposite_outcome() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        let env = Env::default();
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        // Signer produces a signature over the OPPOSITE outcome (NO)
+        let opposite_msg = construct_oracle_message(&env, 10, false);
+        let sig_opposite = signing_key.sign(opposite_msg.to_array().as_slice());
+        let sig_bytes = BytesN::from_array(&env, &sig_opposite.to_bytes());
+
+        let mut signers: Vec<BytesN<32>> = Vec::new(&env);
+        signers.push_back(pubkey);
+
+        let mut sigs: Vec<BytesN<64>> = Vec::new(&env);
+        sigs.push_back(sig_bytes);
+
+        // Submitting opposite signature when verifying outcome YES must be rejected
+        assert_eq!(
+            verify_threshold_signatures(&env, 10, true, &signers, &sigs, 1),
+            Err(ContractError::InvalidSignature)
         );
     }
 }

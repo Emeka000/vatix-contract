@@ -157,6 +157,15 @@ pub struct PendingBytesNChange {
     pub effective_at: u64,
 }
 
+/// A threshold signer set and quorum change awaiting its timelock delay (#665).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingThresholdSignersChange {
+    pub signers: soroban_sdk::Vec<BytesN<32>>,
+    pub quorum: u32,
+    pub effective_at: u64,
+}
+
 
 
 impl Position {

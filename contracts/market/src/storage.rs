@@ -108,6 +108,66 @@ pub enum StorageKey {
     /// Flag indicating whether legacy V1 oracle signatures are disabled.
     /// Admin-controlled toggle for mainnet security compliance.
     OracleV1Disabled,
+    /// Pending threshold signers and quorum update awaiting timelock delay (#665).
+    PendingThresholdSigners,
+    /// Per-market threshold signers override (#665).
+    MarketThresholdSigners(u32),
+    /// Per-market threshold quorum override (#665).
+    MarketThresholdQuorum(u32),
+}
+
+pub fn get_pending_threshold_signers(env: &Env) -> Option<crate::types::PendingThresholdSignersChange> {
+    env.storage().persistent().get(&StorageKey::PendingThresholdSigners)
+}
+
+pub fn set_pending_threshold_signers(env: &Env, pending: &crate::types::PendingThresholdSignersChange) {
+    env.storage().persistent().set(&StorageKey::PendingThresholdSigners, pending);
+}
+
+pub fn clear_pending_threshold_signers(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingThresholdSigners);
+}
+
+pub fn get_market_threshold_signers(env: &Env, market_id: u32) -> Option<Vec<BytesN<32>>> {
+    env.storage().persistent().get(&StorageKey::MarketThresholdSigners(market_id))
+}
+
+pub fn set_market_threshold_signers(env: &Env, market_id: u32, signers: &Vec<BytesN<32>>) {
+    env.storage().persistent().set(&StorageKey::MarketThresholdSigners(market_id), signers);
+}
+
+pub fn get_market_threshold_quorum(env: &Env, market_id: u32) -> Option<u32> {
+    env.storage().persistent().get(&StorageKey::MarketThresholdQuorum(market_id))
+}
+
+pub fn set_market_threshold_quorum(env: &Env, market_id: u32, quorum: u32) {
+    env.storage().persistent().set(&StorageKey::MarketThresholdQuorum(market_id), &quorum);
+}
+
+pub fn get_threshold_signers(env: &Env) -> Vec<BytesN<32>> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::ThresholdSigners)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_threshold_signers(env: &Env, signers: &Vec<BytesN<32>>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::ThresholdSigners, signers);
+}
+
+pub fn get_threshold_quorum(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::ThresholdQuorum)
+        .unwrap_or(0)
+}
+
+pub fn set_threshold_quorum(env: &Env, quorum: u32) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::ThresholdQuorum, &quorum);
 }
 
 pub fn set_oracle_v1_disabled(env: &Env, disabled: bool) {

@@ -170,3 +170,25 @@ gating for high-stakes markets.
   pre-date the adapter, or deprecated entirely?
 - How should `resolution_price` be expressed for non-USD quote currencies?
 - Who is responsible for calling `update_price_feeds` if Pyth is later added?
+
+---
+
+## Threshold Signer Set Governance & Safety Rules (#665)
+
+To harden threshold oracle resolution against compromised admin keys, signer set churn, and Byzantine oracle behavior, the following rules are enforced:
+
+1. **Timelocked Signer Rotation (`propose_threshold_signers` / `execute_threshold_signers`)**:
+   - Updates to the global threshold signer set or quorum requirement require a 24-hour timelock delay (`FEE_RATE_TIMELOCK_SECONDS`).
+   - Prevents an admin from instantly replacing signers to force a fraudulent market outcome.
+
+2. **Per-Market Signer & Quorum Overrides**:
+   - Markets can optionally specify a dedicated threshold signer set (`set_market_threshold_signers`).
+   - If not set, resolution defaults to the global threshold signer configuration.
+
+3. **Strict Quorum & Signer Set Invariants**:
+   - `1 <= quorum <= signers.len()` is strictly enforced during proposal, execution, per-market configuration, and resolution verification.
+   - Duplicate signer entries are rejected.
+
+4. **Byzantine Equivocation Detection**:
+   - Verification checks each signer's signature against both `target_outcome` and `opposite_outcome`.
+   - If any signer submits signatures for conflicting outcomes (equivocation), or if duplicate signer identities are present in the pack, resolution immediately fails closed with `ContractError::InvalidSignature`.
