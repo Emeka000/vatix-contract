@@ -1575,6 +1575,9 @@ impl MarketContract {
     /// - [`ContractError::MarketAlreadyResolved`] — already resolved.
     /// - [`ContractError::UnauthorizedOracle`] — no signers/quorum configured.
     /// - [`ContractError::InvalidSignature`] — fewer than quorum valid sigs.
+    /// If a resolution contract is registered, this returns
+    /// [`ContractError::ResolutionNotFinalized`]. Challenge-based and
+    /// threshold-based resolution are intentionally mutually exclusive.
     pub fn resolve_market_threshold(
         env: Env,
         resolver: Address,
@@ -1590,6 +1593,14 @@ impl MarketContract {
         if market.status == MarketStatus::Resolved {
             return Err(ContractError::MarketAlreadyResolved);
         }
+
+        // Threshold resolution and challenge-window resolution are explicit,
+        // mutually exclusive modes. Once a resolution contract is registered,
+        // every resolution must pass through its propose/challenge/finalize
+        // lifecycle and the single-signature callback guarded by
+        // `require_resolution_finalized`. Allowing this entry point as well
+        // would let a quorum bypass an open or challenged candidate.
+        require_threshold_resolution_mode(&env)?;
 
         let signers = storage::get_threshold_signers(&env);
         let quorum = storage::get_threshold_quorum(&env);
@@ -2222,6 +2233,20 @@ fn require_resolution_finalized(
         || candidate.outcome != outcome
         || &candidate.signature != signature
     {
+        return Err(ContractError::ResolutionNotFinalized);
+    }
+    Ok(())
+}
+
+/// Enforce mutually exclusive market-resolution modes.
+///
+/// Threshold resolution is available only when no challenge-based resolution
+/// contract is registered. Once an admin registers one, its
+/// propose/challenge/finalize lifecycle becomes the sole resolution path; the
+/// threshold entry point fails closed regardless of whether the current
+/// candidate is proposed, challenged, or ready to finalize.
+fn require_threshold_resolution_mode(env: &Env) -> Result<(), ContractError> {
+    if storage::get_resolution_contract(env).is_some() {
         return Err(ContractError::ResolutionNotFinalized);
     }
     Ok(())

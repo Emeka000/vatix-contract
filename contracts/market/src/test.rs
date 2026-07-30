@@ -1689,6 +1689,82 @@ mod test {
     }
 
     #[test]
+    fn test_threshold_resolution_is_disabled_when_resolution_contract_is_registered() {
+        use crate::error::ContractError;
+
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolver = Address::generate(&env);
+        let question = String::from_str(&env, "Will the challenge window be bypassed?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &Address::generate(&env),
+            &None,
+        );
+
+        let (signer, signature) = generate_test_keypair_and_sign(&env, market_id, true);
+        let signers = soroban_sdk::vec![&env, signer];
+        client.set_threshold_signers(&admin, &signers, &1u32);
+        let signatures = soroban_sdk::vec![&env, signature];
+
+        // Registering the challenge-based resolution contract selects that
+        // mode exclusively. The gate is intentionally independent of the
+        // candidate's current status, so proposed and challenged candidates
+        // cannot be bypassed through a valid threshold quorum.
+        client.set_resolution_contract(&admin, &Address::generate(&env));
+
+        assert_eq!(
+            client.try_resolve_market_threshold(&resolver, &market_id, &true, &signatures),
+            Err(Ok(ContractError::ResolutionNotFinalized))
+        );
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.status, MarketStatus::Active);
+        assert_eq!(market.result, None);
+        assert_eq!(market.resolver, None);
+    }
+
+    #[test]
+    fn test_threshold_resolution_without_resolution_contract_succeeds_once() {
+        use crate::error::ContractError;
+
+        let (env, admin, client, contract_id) = create_test_contract();
+        let resolver = Address::generate(&env);
+        let question = String::from_str(&env, "Will threshold mode settle exactly once?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &Address::generate(&env),
+            &None,
+        );
+
+        let (signer, signature) = generate_test_keypair_and_sign(&env, market_id, true);
+        let signers = soroban_sdk::vec![&env, signer];
+        client.set_threshold_signers(&admin, &signers, &1u32);
+        let signatures = soroban_sdk::vec![&env, signature];
+
+        assert_eq!(
+            client.try_resolve_market_threshold(&resolver, &market_id, &true, &signatures),
+            Ok(Ok(()))
+        );
+        assert_eq!(
+            client.try_resolve_market_threshold(&resolver, &market_id, &true, &signatures),
+            Err(Ok(ContractError::MarketAlreadyResolved))
+        );
+
+        let market = get_market_from_storage(&env, &contract_id, market_id);
+        assert_eq!(market.status, MarketStatus::Resolved);
+        assert_eq!(market.result, Some(true));
+        assert_eq!(market.resolver, Some(resolver));
+    }
+
+    #[test]
     fn test_first_nominee_cannot_accept_after_overwrite() {
         let (env, admin, client, _contract_id) = create_test_contract();
         let first_nominee = Address::generate(&env);
