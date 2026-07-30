@@ -37,7 +37,7 @@ pub mod types;
 mod test;
 
 use crate::error::ContractError;
-use crate::types::{CandidateStatus, MarketStatus, ResolutionCandidate, ResolutionConfig};
+use crate::types::{CandidateStatus, EmergencyMode, MarketStatus, ResolutionCandidate, ResolutionConfig};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
@@ -111,6 +111,29 @@ impl ResolutionContract {
         storage::get_config(&env)
     }
 
+    /// Set the mirrored emergency mode (Issue #662).
+    ///
+    /// Only the resolution admin may call this. Operators should keep this
+    /// value in sync with the Market and Treasury contracts for coordinated
+    /// behaviour.
+    pub fn set_emergency_mode(
+        env: Env,
+        admin: Address,
+        new_mode: EmergencyMode,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::set_emergency_mode(&env, &new_mode);
+        events::emit_emergency_mode_changed(&env, &new_mode, &admin);
+        Ok(())
+    }
+
+    /// Return the current mirrored emergency mode.
+    pub fn get_emergency_mode(env: Env) -> EmergencyMode {
+        storage::get_emergency_mode(&env)
+    }
+
     /// Update the registered factory address.
     pub fn set_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
         admin.require_auth();
@@ -161,6 +184,11 @@ impl ResolutionContract {
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: resolution proposals are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
         if bond_amount < MIN_BOND_AMOUNT {
@@ -236,6 +264,14 @@ impl ResolutionContract {
         challenge_uri: String,
     ) -> Result<(), ContractError> {
         challenger.require_auth();
+        // Emergency mode: challenges are blocked in SettleOnly and GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                EmergencyMode::Normal,
+                EmergencyMode::TradingHalted,
+            ],
+        )?;
         validate_uri(&challenge_uri)?;
 
         let mut candidate =
@@ -284,6 +320,11 @@ impl ResolutionContract {
     ) -> Result<(), ContractError> {
         proposer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: appeals are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
 
@@ -342,6 +383,15 @@ impl ResolutionContract {
     ) -> Result<ResolutionCandidate, ContractError> {
         finalizer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: finalization is blocked only in GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                EmergencyMode::Normal,
+                EmergencyMode::TradingHalted,
+                EmergencyMode::SettleOnly,
+            ],
+        )?;
         let mut candidate =
             storage::get_candidate(&env, candidate_id).ok_or(ContractError::CandidateNotFound)?;
 
@@ -412,6 +462,11 @@ impl ResolutionContract {
         amount: i128,
     ) -> Result<(), ContractError> {
         proposer.require_auth();
+        // Emergency mode: collateral deposits are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         if amount <= 0 {
             return Err(ContractError::InvalidCollateral);
         }
@@ -504,6 +559,23 @@ fn require_market_active(
     );
     if status != MarketStatus::Active {
         return Err(ContractError::MarketAlreadyResolved);
+    }
+    Ok(())
+}
+
+/// Guard: reject operations that are not permitted under the current emergency
+/// mode (Issue #662).
+///
+/// `allowed_modes` specifies the set of modes under which the guarded operation
+/// is permitted. If the current mode is not in this set, the call is rejected
+/// with [`ContractError::EmergencyModeActive`].
+fn require_emergency_mode_allows(
+    env: &Env,
+    allowed_modes: &[EmergencyMode],
+) -> Result<(), ContractError> {
+    let current = storage::get_emergency_mode(env);
+    if !allowed_modes.contains(&current) {
+        return Err(ContractError::EmergencyModeActive);
     }
     Ok(())
 }

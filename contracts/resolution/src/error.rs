@@ -33,4 +33,7 @@ pub enum ContractError {
     Unauthorized = 40,
     NotAdmin = 41,
     AlreadyInitialized = 42,
+    /// The operation is blocked by the current emergency mode (Issue #662).
+    /// Check [`crate::storage::get_emergency_mode`] for the active mode.
+    EmergencyModeActive = 50,
 }

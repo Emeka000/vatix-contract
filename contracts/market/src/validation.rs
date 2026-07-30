@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use crate::types::MarketStatus;
+use crate::types::{EmergencyMode, MarketStatus};
 use soroban_sdk::{Address, Env, String};
 
 /// Minimum collateral deposit in stroops (1 USDC = 10_000_000 stroops).
@@ -288,6 +288,29 @@ pub fn require_initialized(env: &Env) -> Result<(), ContractError> {
 pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
     if crate::storage::is_paused(env) {
         return Err(ContractError::ContractPaused);
+    }
+    Ok(())
+}
+
+/// Guard: reject operations that are not permitted under the current emergency
+/// mode (Issue #662).
+///
+/// `allowed_modes` specifies the set of modes under which the guarded operation
+/// is permitted. If the current mode is not in this set, the call is rejected
+/// with [`ContractError::EmergencyModeActive`].
+///
+/// # Example
+/// ```ignore
+/// // Allow only in Normal or TradingHalted (e.g. settle/withdraw)
+/// require_emergency_mode_allows(env, &[EmergencyMode::Normal, EmergencyMode::TradingHalted])?;
+/// ```
+pub fn require_emergency_mode_allows(
+    env: &Env,
+    allowed_modes: &[EmergencyMode],
+) -> Result<(), ContractError> {
+    let current = crate::storage::get_emergency_mode(env);
+    if !allowed_modes.contains(&current) {
+        return Err(ContractError::EmergencyModeActive);
     }
     Ok(())
 }

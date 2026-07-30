@@ -1,4 +1,4 @@
-use crate::types::{ResolutionCandidate, ResolutionConfig};
+use crate::types::{EmergencyMode, ResolutionCandidate, ResolutionConfig};
 use soroban_sdk::{contracttype, Address, Env};
 
 #[contracttype]
@@ -8,6 +8,9 @@ pub enum StorageKey {
     Candidate(u32),
     CandidateByMarket(u32),
     ProposerCollateral(Address),
+    /// Coordinated emergency mode mirrored from the Market contract (Issue #662).
+    /// Defaults to `Normal` when unset. Only the admin can change this value.
+    EmergencyMode,
 }
 
 pub fn has_config(env: &Env) -> bool {
@@ -71,4 +74,23 @@ pub fn set_proposer_collateral(env: &Env, proposer: &Address, amount: i128) {
     env.storage()
         .persistent()
         .set(&StorageKey::ProposerCollateral(proposer.clone()), &amount);
+}
+
+// ── Emergency Mode (Issue #662) ──────────────────────────────────────────────
+
+/// Return the current mirrored emergency mode. Defaults to `Normal` when unset.
+pub fn get_emergency_mode(env: &Env) -> EmergencyMode {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyMode)
+        .unwrap_or(EmergencyMode::Normal)
+}
+
+/// Set the mirrored emergency mode. Only the admin may call this (enforced in
+/// `lib.rs`). Operators should keep this value in sync with the Market and
+/// Treasury contracts for coordinated behaviour.
+pub fn set_emergency_mode(env: &Env, mode: &EmergencyMode) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyMode, mode);
 }

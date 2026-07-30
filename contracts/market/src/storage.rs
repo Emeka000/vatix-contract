@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use crate::types::{Market, PendingFeeRateChange, Position};
+use crate::types::{EmergencyMode, Market, PendingFeeRateChange, Position};
 use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
 /// Bump this constant whenever the storage layout changes in a breaking way.
@@ -31,9 +31,10 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// 5. Initialize: `stellar contract invoke ... -- initialize --admin <addr>`
 /// 6. Verify old deployment returns `UpgradeRequired` error
 ///
-/// ## Current version: 4
+/// ## Current version: 5
 ///
 /// ### Version history:
+/// - **v5:** Added `EmergencyMode` storage for coordinated emergency mode (#662)
 /// - **v4:** Added per-adapter-type `AdapterEnabled` flag for the Reflector/Pyth
 ///   Ed25519 fallback path (#488)
 /// - **v3:** Added Treasury, Outcome Token, Resolution Contract, Threshold Signers
@@ -41,7 +42,7 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// - **v1:** Initial storage layout
 ///
 /// See `STORAGE_MIGRATION_GUIDE.md` and `MIGRATION.md` for detailed history.
-pub const STORAGE_VERSION: u32 = 4;
+pub const STORAGE_VERSION: u32 = 5;
 
 #[contracttype]
 pub enum StorageKey {
@@ -100,6 +101,9 @@ pub enum StorageKey {
     /// Ordered list of all market IDs ever created (append-only).
     /// Used by off-chain indexers to enumerate all markets.
     MarketIds,
+    /// Coordinated emergency mode shared across Market/Treasury/Resolution (Issue #662).
+    /// Defaults to `Normal` when unset. Only the admin can change this value.
+    EmergencyMode,
 }
 
 // --- Version helpers ---
@@ -358,6 +362,25 @@ pub fn is_paused(env: &Env) -> bool {
 /// Pause or unpause the contract (emergency halt).
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().persistent().set(&StorageKey::Paused, &paused);
+}
+
+// --- Emergency Mode (Issue #662) ---
+
+/// Return the current coordinated emergency mode. Defaults to `Normal` when
+/// unset (freshly initialized contract has never had the mode changed).
+pub fn get_emergency_mode(env: &Env) -> EmergencyMode {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyMode)
+        .unwrap_or(EmergencyMode::Normal)
+}
+
+/// Set the coordinated emergency mode. Only the admin may call this (enforced
+/// in `lib.rs`).
+pub fn set_emergency_mode(env: &Env, mode: &EmergencyMode) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyMode, mode);
 }
 
 // --- Oracle Adapter Enabled Flag (#488) ---

@@ -7,11 +7,12 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 /// `initialize()` writes this value so that future migrations can detect stale deployments.
 ///
 /// ## Version history
+/// - **v3:** Added `EmergencyMode` for coordinated emergency mode (#662).
 /// - **v2:** Completed the multi-market `AuthorizedMarkets` registry
 ///   (`add_market`/`remove_market`/`list_markets`/`is_authorized_market`) and
 ///   added the `Stakeholders` fee-distribution list (#485).
 /// - **v1:** Initial storage layout.
-pub const STORAGE_VERSION: u32 = 2;
+pub const STORAGE_VERSION: u32 = 3;
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,9 @@ pub enum StorageKey {
     /// through `collect_fee` (#484). Lets callers enumerate which tokens hold
     /// a balance without needing prior knowledge of the token address.
     FeeTokens,
+    /// Coordinated emergency mode mirrored from the Market contract (Issue #662).
+    /// Defaults to `Normal` when unset. Only the admin can change this value.
+    EmergencyMode,
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────
@@ -221,6 +225,36 @@ pub fn set_stakeholders(env: &Env, stakeholders: &Vec<(Address, u32)>) {
     env.storage()
         .instance()
         .set(&StorageKey::Stakeholders, stakeholders);
+}
+
+// ── Emergency Mode (Issue #662) ─────────────────────────────────────────────
+
+/// Mirrored emergency mode coordinated with the Market contract. Defaults to
+/// `Normal` when never explicitly set. Only the admin may change this value.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EmergencyMode {
+    Normal,
+    TradingHalted,
+    SettleOnly,
+    GlobalFreeze,
+}
+
+/// Return the current mirrored emergency mode. Defaults to `Normal` when unset.
+pub fn get_emergency_mode(env: &Env) -> EmergencyMode {
+    env.storage()
+        .instance()
+        .get(&StorageKey::EmergencyMode)
+        .unwrap_or(EmergencyMode::Normal)
+}
+
+/// Set the mirrored emergency mode. Only the admin may call this (enforced in
+/// `lib.rs`). Operators should keep this value in sync with the Market and
+/// Resolution contracts for coordinated behaviour.
+pub fn set_emergency_mode(env: &Env, mode: &EmergencyMode) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::EmergencyMode, mode);
 }
 
 #[cfg(test)]

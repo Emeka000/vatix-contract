@@ -17,6 +17,7 @@
 //! | `MarketRemoved`         | `market_removed`                   |
 //! | `StakeholdersUpdated`   | `stakeholders_updated`             |
 //! | `FeesDistributed`       | `fees_distributed`                 |
+//! | `EmergencyModeChanged`  | `emergency_mode_changed`           |
 
 use soroban_sdk::{contractevent, Address, Env};
 
@@ -252,6 +253,26 @@ pub fn emit_treasury_unpaused(env: &Env, admin: &Address) {
     TreasuryUnpausedEvent {
         admin: admin.clone(),
         unpaused_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ── Emergency mode (Issue #662) ──────────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TreasuryEmergencyModeChanged {
+    #[topic]
+    pub new_mode: crate::storage::EmergencyMode,
+    pub admin: Address,
+    pub changed_at: u64,
+}
+
+pub fn emit_emergency_mode_changed(env: &Env, new_mode: &crate::storage::EmergencyMode, admin: &Address) {
+    TreasuryEmergencyModeChanged {
+        new_mode: new_mode.clone(),
+        admin: admin.clone(),
+        changed_at: env.ledger().timestamp(),
     }
     .publish(env);
 }
