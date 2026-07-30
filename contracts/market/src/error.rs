@@ -251,6 +251,14 @@ pub enum ContractError {
     /// All state-mutating operations are temporarily disabled.
     ContractPaused = 91,
 
+    /// The requested operation is blocked by the current emergency mode
+    /// (Issue #662). Check [`get_emergency_mode`] for the active mode.
+    ///
+    /// In `TradingHalted`: deposits, trades, and market creation are blocked.
+    /// In `SettleOnly`: only settlement and withdrawal are allowed.
+    /// In `GlobalFreeze`: all non-admin operations are blocked.
+    EmergencyModeActive = 92,
+
     // ========== Security Errors (100-109) ==========
     /// A reentrant call was detected (e.g. a token contract calling back into
     /// `deposit_collateral` before the initial call has finished).
@@ -381,6 +389,7 @@ mod tests {
             (ContractError::ResolutionNotFinalized, 80),
             (ContractError::NotInitialized, 90),
             (ContractError::ContractPaused, 91),
+            (ContractError::EmergencyModeActive, 92),
             (ContractError::ReentrantCall, 100),
             (ContractError::NoPendingFeeChange, 110),
             (ContractError::TimelockNotElapsed, 111),

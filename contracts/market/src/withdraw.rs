@@ -92,6 +92,17 @@ pub fn withdraw_unused_collateral(
 ) -> Result<(), ContractError> {
     user.require_auth();
 
+    // Emergency mode: withdrawals are blocked only in GlobalFreeze;
+    // allowed in Normal, TradingHalted, and SettleOnly.
+    validation::require_emergency_mode_allows(
+        &env,
+        &[
+            crate::types::EmergencyMode::Normal,
+            crate::types::EmergencyMode::TradingHalted,
+            crate::types::EmergencyMode::SettleOnly,
+        ],
+    )?;
+
     // 1. Validate amount is positive and within safe range.
     validation::validate_collateral_amount(amount)?;
 

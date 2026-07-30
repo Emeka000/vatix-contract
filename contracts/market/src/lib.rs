@@ -337,6 +337,11 @@ impl MarketContract {
     ) -> Result<u32, ContractError> {
         validation::require_initialized(&env)?;
         validation::require_not_paused(&env)?;
+        // Emergency mode: market creation is only allowed in Normal mode
+        validation::require_emergency_mode_allows(
+            &env,
+            &[crate::types::EmergencyMode::Normal],
+        )?;
         // 1. Verify creator is admin
         creator.require_auth();
         let admin = storage::get_admin(&env)?;
@@ -479,6 +484,15 @@ impl MarketContract {
         expires_at: u64,
     ) -> Result<(), ContractError> {
         validation::require_not_paused(&env)?;
+        // Emergency mode: resolve is blocked in SettleOnly and GlobalFreeze;
+        // allowed in Normal and TradingHalted.
+        validation::require_emergency_mode_allows(
+            &env,
+            &[
+                crate::types::EmergencyMode::Normal,
+                crate::types::EmergencyMode::TradingHalted,
+            ],
+        )?;
         resolver.require_auth();
         let market_id = validation::parse_market_id(&market_id)?;
         // Step 1: Load and validate market
@@ -649,6 +663,52 @@ impl MarketContract {
     /// Return whether the contract is currently paused for emergency maintenance.
     pub fn is_paused(env: Env) -> bool {
         storage::is_paused(&env)
+    }
+
+    /// Set the coordinated emergency mode (Issue #662).
+    ///
+    /// Only the stored admin may call this. The mode is shared (or mirrored)
+    /// across the Market, Treasury, and Resolution contracts. Operators should
+    /// set it on all three contracts with the same value for coordinated
+    /// behaviour.
+    ///
+    /// # Mode effects
+    ///
+    /// | Mode             | Blocked operations                                     |
+    /// |------------------|--------------------------------------------------------|
+    /// | `Normal`         | (none — all operations allowed)                        |
+    /// | `TradingHalted`  | deposit, trade, create market, propose resolution      |
+    /// | `SettleOnly`     | deposit, trade, create market, resolve, propose        |
+    /// | `GlobalFreeze`   | all non-admin operations                               |
+    ///
+    /// In `TradingHalted` and `SettleOnly`, withdraw and settle remain
+    /// available so users can always exit during an incident.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::EmergencyModeActive`] — when setting to a mode other
+    ///   than `Normal` from `GlobalFreeze` (must unpause first ... actually no,
+    ///   this is the admin changing the mode, so always allowed).
+    pub fn set_emergency_mode(
+        env: Env,
+        admin: Address,
+        new_mode: crate::types::EmergencyMode,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_emergency_mode(&env, &new_mode);
+        events::emit_emergency_mode_changed(&env, &new_mode, &admin);
+        Ok(())
+    }
+
+    /// Return the current coordinated emergency mode.
+    /// Defaults to `Normal` when never explicitly set.
+    pub fn get_emergency_mode(env: Env) -> crate::types::EmergencyMode {
+        storage::get_emergency_mode(&env)
     }
 
     /// Cancel a market before it is resolved, halting all further trading.
@@ -939,6 +999,11 @@ impl MarketContract {
         market_price: i128,
     ) -> Result<Position, ContractError> {
         validation::require_not_paused(&env)?;
+        // Emergency mode: trading is blocked unless mode is Normal
+        validation::require_emergency_mode_allows(
+            &env,
+            &[crate::types::EmergencyMode::Normal],
+        )?;
         // 1. Authorization
         user.require_auth();
 

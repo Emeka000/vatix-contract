@@ -14,6 +14,21 @@ pub enum MarketStatus {
     Canceled,
 }
 
+/// Mirrored emergency mode coordinated with the Market contract (Issue #662).
+/// Kept as a local mirror for the same reason as [`MarketStatus`] — the
+/// resolution crate cannot depend on the market crate directly.
+///
+/// Defaults to `Normal` when never explicitly set. Only the admin may change
+/// this value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum EmergencyMode {
+    Normal,
+    TradingHalted,
+    SettleOnly,
+    GlobalFreeze,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum CandidateStatus {

@@ -53,7 +53,7 @@ pub mod types;
 mod test;
 
 use crate::error::ContractError;
-use crate::types::{CandidateStatus, MarketStatus, ResolutionCandidate, ResolutionConfig};
+use crate::types::{CandidateStatus, EmergencyMode, MarketStatus, ResolutionCandidate, ResolutionConfig};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use soroban_sdk::{IntoVal, Symbol, Val, Vec};
@@ -253,6 +253,11 @@ impl ResolutionContract {
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: resolution proposals are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
         if bond_amount < MIN_BOND_AMOUNT {
@@ -343,6 +348,14 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<(), ContractError> {
         challenger.require_auth();
+        // Emergency mode: challenges are blocked in SettleOnly and GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                EmergencyMode::Normal,
+                EmergencyMode::TradingHalted,
+            ],
+        )?;
         validate_uri(&challenge_uri)?;
         if bond_amount < MIN_CHALLENGE_BOND_AMOUNT {
             return Err(ContractError::InsufficientChallengeBond);
@@ -404,6 +417,11 @@ impl ResolutionContract {
     ) -> Result<(), ContractError> {
         proposer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: appeals are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         validate_uri(&evidence_uri)?;
         validate_challenge_window(challenge_window_seconds)?;
 
@@ -462,6 +480,15 @@ impl ResolutionContract {
     ) -> Result<ResolutionCandidate, ContractError> {
         finalizer.require_auth();
         let config = storage::get_config(&env);
+        // Emergency mode: finalization is blocked only in GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                EmergencyMode::Normal,
+                EmergencyMode::TradingHalted,
+                EmergencyMode::SettleOnly,
+            ],
+        )?;
         let mut candidate =
             storage::get_candidate(&env, candidate_id).ok_or(ContractError::CandidateNotFound)?;
 
@@ -554,6 +581,11 @@ impl ResolutionContract {
         amount: i128,
     ) -> Result<(), ContractError> {
         proposer.require_auth();
+        // Emergency mode: collateral deposits are blocked unless mode is Normal
+        require_emergency_mode_allows(
+            &env,
+            &[EmergencyMode::Normal],
+        )?;
         if amount <= 0 {
             return Err(ContractError::InvalidCollateral);
         }

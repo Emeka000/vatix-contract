@@ -9,6 +9,24 @@ pub enum MarketStatus {
     Canceled,
 }
 
+/// Coordinated emergency mode shared (or mirrored) across Market,
+/// Treasury, and Resolution contracts (Issue #662).
+///
+/// | Variant         | Effect                                                       |
+/// |-----------------|--------------------------------------------------------------|
+/// | `Normal`        | All operations allowed.                                      |
+/// | `TradingHalted` | Reject deposit/trade/propose; allow withdraw + settle/resolve.|
+/// | `SettleOnly`    | Only settle & withdraw; block resolve & propose.             |
+/// | `GlobalFreeze`  | Everything blocked except admin unpause/management.          |
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum EmergencyMode {
+    Normal,
+    TradingHalted,
+    SettleOnly,
+    GlobalFreeze,
+}
+
 /// Represents the oracle adapter type used for market resolution.
 ///
 /// This enum determines which oracle adapter (Ed25519, Reflector, or Pyth)

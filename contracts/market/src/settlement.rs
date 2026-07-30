@@ -185,6 +185,18 @@ pub fn execute_settlement(
 /// Emits `PositionSettled` with the payout amount.
 pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128, ContractError> {
     user.require_auth();
+    // Emergency mode: settlement is blocked only in GlobalFreeze;
+    // allowed in Normal, TradingHalted, and SettleOnly.
+    crate::validation::require_emergency_mode_allows(
+        env,
+        &[
+            crate::types::EmergencyMode::Normal,
+            crate::types::EmergencyMode::TradingHalted,
+            crate::types::EmergencyMode::SettleOnly,
+        ],
+    )?;
+
+
 
     let market = storage::get_market(env, market_id)?.ok_or(ContractError::MarketNotFound)?;
     let mut position =
@@ -241,6 +253,16 @@ pub fn batch_settle_positions(
     market_id: u32,
     users: Vec<Address>,
 ) -> Result<i128, ContractError> {
+    // Emergency mode: settlement is blocked only in GlobalFreeze
+    crate::validation::require_emergency_mode_allows(
+        env,
+        &[
+            crate::types::EmergencyMode::Normal,
+            crate::types::EmergencyMode::TradingHalted,
+            crate::types::EmergencyMode::SettleOnly,
+        ],
+    )?;
+
     // Guard: reject empty batches immediately to surface caller bugs early
     // rather than silently returning 0 with no indication anything was wrong.
     if users.is_empty() {
@@ -335,6 +357,16 @@ pub fn settle_positions_page(
     start_index: u32,
     limit: u32,
 ) -> Result<(i128, u32, bool), ContractError> {
+    // Emergency mode: settlement is blocked only in GlobalFreeze
+    crate::validation::require_emergency_mode_allows(
+        env,
+        &[
+            crate::types::EmergencyMode::Normal,
+            crate::types::EmergencyMode::TradingHalted,
+            crate::types::EmergencyMode::SettleOnly,
+        ],
+    )?;
+
     let market = storage::get_market(env, market_id)?.ok_or(ContractError::MarketNotFound)?;
     if market.status != MarketStatus::Resolved {
         return Err(ContractError::MarketNotResolved);

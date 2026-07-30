@@ -81,6 +81,12 @@ pub fn deposit_collateral(
     // Authorization
     user.require_auth();
 
+    // Emergency mode: deposits are blocked unless mode is Normal
+    crate::validation::require_emergency_mode_allows(
+        &env,
+        &[crate::types::EmergencyMode::Normal],
+    )?;
+
     // Reentrancy guard: held for the remainder of this call, released
     // automatically when it goes out of scope.
     let _guard = DepositReentrancyGuard::acquire(&env)?;

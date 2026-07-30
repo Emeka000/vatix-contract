@@ -98,6 +98,15 @@ impl TreasuryContract {
         if storage::is_paused(&env) {
             return Err(TreasuryError::ContractPaused);
         }
+        // Emergency mode: fee collection is blocked only in GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                storage::EmergencyMode::Normal,
+                storage::EmergencyMode::TradingHalted,
+                storage::EmergencyMode::SettleOnly,
+            ],
+        )?;
         if !storage::is_authorized_market(&env, &caller) {
             return Err(TreasuryError::CallerNotMarket);
         }
@@ -154,6 +163,15 @@ impl TreasuryContract {
         if storage::is_paused(&env) {
             return Err(TreasuryError::ContractPaused);
         }
+        // Emergency mode: fee withdrawal is blocked only in GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                storage::EmergencyMode::Normal,
+                storage::EmergencyMode::TradingHalted,
+                storage::EmergencyMode::SettleOnly,
+            ],
+        )?;
         let admin = storage::get_admin(&env)?;
         if caller != admin {
             return Err(TreasuryError::Unauthorized);
@@ -392,6 +410,33 @@ impl TreasuryContract {
         Ok(())
     }
 
+    /// Set the mirrored emergency mode (Issue #662).
+    ///
+    /// Only the treasury admin may call this. Operators should keep this value
+    /// in sync with the Market and Resolution contracts for coordinated behaviour.
+    pub fn set_emergency_mode(
+        env: Env,
+        caller: Address,
+        new_mode: storage::EmergencyMode,
+    ) -> Result<(), TreasuryError> {
+        caller.require_auth();
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+        storage::set_emergency_mode(&env, &new_mode);
+        events::emit_emergency_mode_changed(&env, &new_mode, &caller);
+        Ok(())
+    }
+
+    /// Return the current mirrored emergency mode.
+    pub fn get_emergency_mode(env: Env) -> storage::EmergencyMode {
+        storage::get_emergency_mode(&env)
+    }
+
     // ── Stakeholder fee distribution (#485) ────────────────────────────────────
 
     /// Configure the stakeholder revenue-share list (admin only).
@@ -459,6 +504,15 @@ impl TreasuryContract {
         if storage::is_paused(&env) {
             return Err(TreasuryError::ContractPaused);
         }
+        // Emergency mode: fee distribution is blocked only in GlobalFreeze
+        require_emergency_mode_allows(
+            &env,
+            &[
+                storage::EmergencyMode::Normal,
+                storage::EmergencyMode::TradingHalted,
+                storage::EmergencyMode::SettleOnly,
+            ],
+        )?;
         let admin = storage::get_admin(&env)?;
         if caller != admin {
             return Err(TreasuryError::Unauthorized);
@@ -547,4 +601,21 @@ impl TreasuryContract {
     pub fn total_collected(env: Env) -> Result<i128, TreasuryError> {
         storage::get_total_collected(&env)
     }
+}
+
+/// Guard: reject operations that are not permitted under the current emergency
+/// mode (Issue #662).
+///
+/// `allowed_modes` specifies the set of modes under which the guarded operation
+/// is permitted. If the current mode is not in this set, the call is rejected
+/// with [`TreasuryError::EmergencyModeActive`].
+fn require_emergency_mode_allows(
+    env: &Env,
+    allowed_modes: &[storage::EmergencyMode],
+) -> Result<(), TreasuryError> {
+    let current = storage::get_emergency_mode(env);
+    if !allowed_modes.contains(&current) {
+        return Err(TreasuryError::EmergencyModeActive);
+    }
+    Ok(())
 }

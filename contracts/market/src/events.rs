@@ -93,6 +93,30 @@ pub fn emit_emergency_pause_toggled(env: &Env, paused: bool) {
 }
 
 
+/// Event emitted when the coordinated emergency mode is changed (Issue #662).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EmergencyModeChanged {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub new_mode: crate::types::EmergencyMode,
+    pub admin: Address,
+    pub changed_at: u64,
+}
+
+/// Emit event when the emergency mode changes.
+pub fn emit_emergency_mode_changed(env: &Env, new_mode: &crate::types::EmergencyMode, admin: &Address) {
+    EmergencyModeChanged {
+        version: EVENT_VERSION,
+        new_mode: new_mode.clone(),
+        admin: admin.clone(),
+        changed_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MarketCreated {
