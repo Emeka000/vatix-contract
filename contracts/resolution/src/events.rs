@@ -202,6 +202,66 @@ pub fn emit_market_voided(env: &Env, candidate_id: u32, market_id: u32) {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct FactoryProposed {
+    #[topic]
+    pub factory: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_factory_proposed(env: &Env, factory: &Address, effective_at: u64) {
+    FactoryProposed {
+        factory: factory.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct FactorySet {
+    #[topic]
+    pub factory: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_factory_set(env: &Env, factory: &Address) {
+    FactorySet {
+        factory: factory.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractProposed {
+    #[topic]
+    pub market_contract: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_market_contract_proposed(env: &Env, market_contract: &Address, effective_at: u64) {
+    MarketContractProposed {
+        market_contract: market_contract.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractSet {
+    #[topic]
+    pub market_contract: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_market_contract_set(env: &Env, market_contract: &Address) {
+    MarketContractSet {
+        market_contract: market_contract.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct CandidateFinalized {
     #[topic]
     pub candidate_id: u32,

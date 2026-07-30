@@ -94,6 +94,27 @@ fn compute_settlement(
     Ok(payout)
 }
 
+/// Burn a settled position's outcome tokens (both YES and NO sides), if an
+/// outcome-token contract is wired up via [`crate::MarketContract::set_outcome_token_contract`].
+///
+/// Retires the position's tokens now that they have been redeemed for the
+/// collateral payout, so a settled position's outcome tokens can never be
+/// transferred or redeemed a second time. Shared by every settle path
+/// (`settle_position`, `batch_settle_positions`, `settle_positions_page`) so
+/// full-exit burning behaves identically regardless of which entrypoint a
+/// caller uses.
+fn burn_settled_outcome_tokens(env: &Env, market_id: u32, user: &Address, position: &Position) {
+    if let Some(outcome_token_address) = storage::get_outcome_token_contract(env) {
+        let token_client = OutcomeTokenContractClient::new(env, &outcome_token_address);
+        if position.yes_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::Yes, &position.yes_shares);
+        }
+        if position.no_shares > 0 {
+            token_client.burn(&market_id, user, &TokenKind::No, &position.no_shares);
+        }
+    }
+}
+
 /// Execute settlement for a position and return payout
 ///
 /// This function:
@@ -173,19 +194,7 @@ pub fn settle_position(env: &Env, user: &Address, market_id: u32) -> Result<i128
     // payout, marks the position settled, and emits the PositionSettled event.
     let payout = execute_settlement(env, &mut position, &market)?;
 
-    // Merge (retire) this position's outcome tokens now that they have been
-    // redeemed for the collateral payout above. Both the winning and losing
-    // side balances are burned back into nothing so a settled position's
-    // outcome tokens can never be transferred or redeemed a second time.
-    if let Some(outcome_token_address) = storage::get_outcome_token_contract(env) {
-        let token_client = OutcomeTokenContractClient::new(env, &outcome_token_address);
-        if position.yes_shares > 0 {
-            token_client.burn(&market_id, user, &TokenKind::Yes, &position.yes_shares);
-        }
-        if position.no_shares > 0 {
-            token_client.burn(&market_id, user, &TokenKind::No, &position.no_shares);
-        }
-    }
+    burn_settled_outcome_tokens(env, market_id, user, &position);
 
     // Persist the settled position before paying out.
     storage::set_position(env, market_id, user, &position)?;
@@ -262,6 +271,8 @@ pub fn batch_settle_positions(
         let Ok(payout) = compute_settlement(env, &mut position, &market) else {
             continue;
         };
+
+        burn_settled_outcome_tokens(env, market_id, &user, &position);
 
         // Persist the settled flag; skip if storage fails.
         if storage::set_position(env, market_id, &user, &position).is_err() {
@@ -350,6 +361,8 @@ pub fn settle_positions_page(
         let Ok(payout) = compute_settlement(env, &mut position, &market) else {
             continue;
         };
+
+        burn_settled_outcome_tokens(env, market_id, &user, &position);
 
         if storage::set_position(env, market_id, &user, &position).is_err() {
             continue;
@@ -1099,6 +1112,91 @@ mod tests {
         }
     }
 
+    /// #578: `batch_settle_positions` and `settle_positions_page` must burn a
+    /// settled position's outcome tokens when an outcome-token contract is
+    /// wired, exactly like the single-user `settle_position` path already
+    /// does — otherwise a fully-exited position's YES/NO balances would be
+    /// left outstanding after settlement.
+    #[test]
+    fn test_batch_settle_burns_outcome_tokens_when_wired() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::String;
+        use vatix_outcome_token_contract::{OutcomeTokenContract, OutcomeTokenContractClient};
+
+        const DEPOSIT: i128 = 100_000_000;
+        const SHARES: i128 = 100_000_000;
+
+        let env = soroban_sdk::Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(crate::MarketContract, ());
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(&env, &admin);
+            storage::set_version(&env);
+        });
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin);
+        let collateral_token = token.address();
+        let sac = StellarAssetClient::new(&env, &collateral_token);
+
+        let ot_contract_id = env.register(OutcomeTokenContract, ());
+        let ot_client = OutcomeTokenContractClient::new(&env, &ot_contract_id);
+        ot_client.initialize(
+            &admin,
+            &contract_id,
+            &String::from_str(&env, "Vatix Outcome Token"),
+            &String::from_str(&env, "VOT"),
+        );
+
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let oracle_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let client = crate::MarketContractClient::new(&env, &contract_id);
+        let question = String::from_str(&env, "Batch settle burns outcome tokens?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin, &question, &end_time, &oracle_pubkey, &collateral_token,
+        );
+        client.set_outcome_token_contract(&admin, &ot_contract_id);
+
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        for u in [&user1, &user2] {
+            sac.mint(u, &DEPOSIT);
+            client.deposit_collateral(u, &market_id, &DEPOSIT);
+            client.update_position(u, &market_id, &SHARES, &0i128, &5_000i128);
+        }
+
+        // Outcome tokens were minted alongside the position updates above.
+        assert_eq!(ot_client.total_supply(&market_id, &TokenKind::Yes), SHARES * 2);
+        assert_eq!(ot_client.balance(&market_id, &user1, &TokenKind::Yes), SHARES);
+        assert_eq!(ot_client.balance(&market_id, &user2, &TokenKind::Yes), SHARES);
+
+        let outcome = true;
+        let message = crate::oracle::construct_oracle_message(&env, market_id, outcome);
+        let sig_bytes = signing_key.sign(message.to_array().as_slice()).to_bytes();
+        let signature = BytesN::from_array(&env, &sig_bytes);
+        let market_id_str = String::from_str(&env, "1");
+        client.resolve_market(&market_id_str, &outcome, &signature);
+
+        let mut users: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        users.push_back(user1.clone());
+        users.push_back(user2.clone());
+        env.as_contract(&contract_id, || batch_settle_positions(&env, market_id, users))
+            .expect("batch settle should succeed");
+
+        // Full exit via batch settlement must burn every settled user's
+        // outcome tokens, driving total supply back to zero.
+        assert_eq!(ot_client.total_supply(&market_id, &TokenKind::Yes), 0);
+        assert_eq!(ot_client.balance(&market_id, &user1, &TokenKind::Yes), 0);
+        assert_eq!(ot_client.balance(&market_id, &user2, &TokenKind::Yes), 0);
+    }
+
     #[test]
     fn test_batch_settle_skips_already_settled() {
         use soroban_sdk::String;
@@ -1247,6 +1345,78 @@ mod tests {
         assert!(total_payout > 0, "resolved market page-settle must pay out");
         assert!(is_complete);
         assert_eq!(next_index, 2); // two participants were set up by setup_resolved_market
+    }
+
+    /// #578: `settle_positions_page` must also burn outcome tokens on full
+    /// exit, matching `settle_position` and `batch_settle_positions`.
+    #[test]
+    fn test_settle_positions_page_burns_outcome_tokens_when_wired() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::String;
+        use vatix_outcome_token_contract::{OutcomeTokenContract, OutcomeTokenContractClient};
+
+        const DEPOSIT: i128 = 100_000_000;
+        const SHARES: i128 = 100_000_000;
+
+        let env = soroban_sdk::Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(crate::MarketContract, ());
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_admin(&env, &admin);
+            storage::set_version(&env);
+        });
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin);
+        let collateral_token = token.address();
+        let sac = StellarAssetClient::new(&env, &collateral_token);
+
+        let ot_contract_id = env.register(OutcomeTokenContract, ());
+        let ot_client = OutcomeTokenContractClient::new(&env, &ot_contract_id);
+        ot_client.initialize(
+            &admin,
+            &contract_id,
+            &String::from_str(&env, "Vatix Outcome Token"),
+            &String::from_str(&env, "VOT"),
+        );
+
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let oracle_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let client = crate::MarketContractClient::new(&env, &contract_id);
+        let question = String::from_str(&env, "Page settle burns outcome tokens?");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = client.initialize_market(
+            &admin, &question, &end_time, &oracle_pubkey, &collateral_token,
+        );
+        client.set_outcome_token_contract(&admin, &ot_contract_id);
+
+        let user = Address::generate(&env);
+        sac.mint(&user, &DEPOSIT);
+        client.deposit_collateral(&user, &market_id, &DEPOSIT);
+        client.update_position(&user, &market_id, &SHARES, &0i128, &5_000i128);
+        assert_eq!(ot_client.balance(&market_id, &user, &TokenKind::Yes), SHARES);
+
+        let outcome = true;
+        let message = crate::oracle::construct_oracle_message(&env, market_id, outcome);
+        let sig_bytes = signing_key.sign(message.to_array().as_slice()).to_bytes();
+        let signature = BytesN::from_array(&env, &sig_bytes);
+        let market_id_str = String::from_str(&env, "1");
+        client.resolve_market(&market_id_str, &outcome, &signature);
+
+        // Fund the contract so the page-settle payout transfer succeeds.
+        StellarAssetClient::new(&env, &collateral_token).mint(&contract_id, &(1_000_000_000i128));
+
+        env.as_contract(&contract_id, || settle_positions_page(&env, market_id, 0, 10))
+            .expect("resolved market should settle successfully");
+
+        assert_eq!(ot_client.total_supply(&market_id, &TokenKind::Yes), 0);
+        assert_eq!(ot_client.balance(&market_id, &user, &TokenKind::Yes), 0);
     }
 
     // --- Issue #551: batch size hardening ---
