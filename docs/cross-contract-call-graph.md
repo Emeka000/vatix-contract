@@ -165,6 +165,15 @@ reconcile_position_tokens(admin, market_id, user)     [admin-gated]
 
 ---
 
+Registering a resolution contract selects this challenge-based lifecycle as the
+market's exclusive resolution mode. While the registration is present,
+`Market::resolve_market_threshold` fails closed with
+`ResolutionNotFinalized`; a threshold quorum therefore cannot bypass an open or
+challenged candidate. Threshold resolution remains available only when no
+resolution contract is registered. After `finalize` resolves the market through
+the guarded single-signature callback, any later resolution attempt fails with
+`MarketAlreadyResolved`.
+
 ## Authorization Summary
 
 | Call | Who authorizes |
@@ -175,6 +184,7 @@ reconcile_position_tokens(admin, market_id, user)     [admin-gated]
 | `Market::resolve_market` (via Resolution) | Resolution contract address as `resolver` |
 | `Market::reconcile_position_tokens` | Market contract's stored admin |
 | `Market::get_position_token_parity` | No auth (public read) |
+| `Market::resolve_market_threshold` | Caller authorizes as `resolver`; disabled while a Resolution contract is registered |
 
 ---
 
