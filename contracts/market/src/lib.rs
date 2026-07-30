@@ -498,6 +498,10 @@ impl MarketContract {
         // Step 1: Load and validate market
         let mut market =
             storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        if storage::is_oracle_v1_disabled(&env) {
+            return Err(ContractError::UnauthorizedOracle);
+        }
+
         if market.status == MarketStatus::Resolved {
             return Err(ContractError::MarketAlreadyResolved);
         }
@@ -677,6 +681,27 @@ impl MarketContract {
             epoch,
             &signature,
         )
+    /// Disable or enable legacy V1 oracle signatures (#657).
+    ///
+    /// Admin-controlled toggle for mainnet security compliance.
+    pub fn set_oracle_v1_disabled(
+        env: Env,
+        admin: Address,
+        disabled: bool,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::set_oracle_v1_disabled(&env, disabled);
+        Ok(())
+    }
+
+    /// Return whether legacy V1 oracle signatures are currently disabled (#657).
+    pub fn is_oracle_v1_disabled(env: Env) -> bool {
+        storage::is_oracle_v1_disabled(&env)
     }
 
     /// Enable or disable the Reflector/Pyth oracle adapter for resolution (#488).
