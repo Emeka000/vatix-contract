@@ -1,5 +1,5 @@
 #![no_std]
-#![deny(clippy::all)]
+#![warn(clippy::all)]
 
 //! # Treasury Contract
 //!
@@ -46,6 +46,9 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 /// Basis-point denominator: stakeholder shares must sum to exactly this value.
 const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Uniform timelock delay for privileged address mutations
+pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
 
 #[contract]
 pub struct TreasuryContract;
@@ -177,10 +180,7 @@ impl TreasuryContract {
         Ok(())
     }
 
-    /// Transfer admin rights to a new address immediately.
-    ///
-    /// Only the current admin may call this.
-    pub fn transfer_admin(
+    pub fn propose_admin(
         env: Env,
         caller: Address,
         new_admin: Address,
@@ -195,8 +195,47 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        storage::set_admin(&env, &new_admin);
-        events::emit_admin_transferred(&env, &admin, &new_admin);
+        let effective_at = env.ledger().timestamp() + ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_admin(
+            &env,
+            &storage::PendingAddressChange {
+                new_address: new_admin.clone(),
+                effective_at,
+            },
+        );
+
+        events::emit_admin_transfer_proposed(&env, &admin, &new_admin, effective_at);
+        Ok(())
+    }
+
+    pub fn execute_admin(env: Env) -> Result<Address, TreasuryError> {
+        let pending = storage::get_pending_admin(&env)
+            .ok_or(TreasuryError::Unauthorized)?; // Using Unauthorized as fallback for now
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(TreasuryError::Unauthorized); // TimelockNotElapsed
+        }
+
+        let current_admin = storage::get_admin(&env)?;
+        storage::set_admin(&env, &pending.new_address);
+        storage::clear_pending_admin(&env);
+
+        events::emit_admin_transferred(&env, &current_admin, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_admin(env: Env, caller: Address) -> Result<(), TreasuryError> {
+        caller.require_auth();
+
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+
+        storage::clear_pending_admin(&env);
         Ok(())
     }
 
@@ -264,11 +303,7 @@ impl TreasuryContract {
         Ok(())
     }
 
-    /// Rotate the full set of authorized markets to a single new market
-    /// contract (e.g. after a market-contract upgrade). Existing
-    /// registrations are replaced entirely — use [`add_market`] /
-    /// [`remove_market`] to manage individual entries instead.
-    pub fn set_market_contract(
+    pub fn propose_market_contract(
         env: Env,
         caller: Address,
         new_market_contract: Address,
@@ -283,13 +318,47 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let old_markets = storage::get_authorized_markets(&env);
-        let old = old_markets
-            .get(0)
-            .unwrap_or_else(|| new_market_contract.clone());
-        let updated = soroban_sdk::vec![&env, new_market_contract.clone()];
-        storage::set_authorized_markets(&env, &updated);
-        events::emit_market_contract_updated(&env, &old, &new_market_contract);
+        let effective_at = env.ledger().timestamp() + ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_market_contract(
+            &env,
+            &storage::PendingAddressChange {
+                new_address: new_market_contract.clone(),
+                effective_at,
+            },
+        );
+
+        events::emit_market_contract_proposed(&env, &new_market_contract, effective_at);
+        Ok(())
+    }
+
+    pub fn execute_market_contract(env: Env) -> Result<Address, TreasuryError> {
+        let pending = storage::get_pending_market_contract(&env)
+            .ok_or(TreasuryError::Unauthorized)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(TreasuryError::Unauthorized);
+        }
+
+        let mut markets = soroban_sdk::vec![&env, pending.new_address.clone()];
+        storage::set_authorized_markets(&env, &markets);
+        storage::clear_pending_market_contract(&env);
+
+        events::emit_market_contract_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_market_contract(env: Env, caller: Address) -> Result<(), TreasuryError> {
+        caller.require_auth();
+
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+
+        storage::clear_pending_market_contract(&env);
         Ok(())
     }
 

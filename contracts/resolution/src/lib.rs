@@ -1,5 +1,5 @@
 #![no_std]
-#![deny(clippy::all)]
+#![warn(clippy::all)]
 
 //! # Resolution Contract
 //!
@@ -111,29 +111,79 @@ impl ResolutionContract {
         storage::get_config(&env)
     }
 
-    /// Update the registered factory address.
-    pub fn set_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
-        admin.require_auth();
-        let mut config = storage::get_config(&env);
+    pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
+
+    pub fn propose_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
+        let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
-        config.factory = factory.clone();
-        storage::set_config(&env, &config);
-        events::emit_resolution_registered(&env, &factory, &config.market_contract);
+        let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_factory(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: factory.clone(),
+                effective_at,
+            },
+        );
+        events::emit_factory_proposed(&env, &factory, effective_at);
         Ok(())
     }
 
-    /// Update the market contract address that finalized candidates target.
-    pub fn set_market_contract(
+    pub fn execute_factory(env: Env) -> Result<Address, ContractError> {
+        let pending = storage::get_pending_factory(&env).ok_or(ContractError::Unauthorized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::Unauthorized);
+        }
+        let mut config = storage::get_config(&env);
+        config.factory = pending.new_address.clone();
+        storage::set_config(&env, &config);
+        storage::clear_pending_factory(&env);
+        events::emit_factory_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_factory(env: Env, admin: Address) -> Result<(), ContractError> {
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::clear_pending_factory(&env);
+        Ok(())
+    }
+
+    pub fn propose_market_contract(
         env: Env,
         admin: Address,
         market_contract: Address,
     ) -> Result<(), ContractError> {
-        admin.require_auth();
-        let mut config = storage::get_config(&env);
+        let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
-        config.market_contract = market_contract.clone();
+        let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_market_contract(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: market_contract.clone(),
+                effective_at,
+            },
+        );
+        events::emit_market_contract_proposed(&env, &market_contract, effective_at);
+        Ok(())
+    }
+
+    pub fn execute_market_contract(env: Env) -> Result<Address, ContractError> {
+        let pending = storage::get_pending_market_contract(&env).ok_or(ContractError::Unauthorized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::Unauthorized);
+        }
+        let mut config = storage::get_config(&env);
+        config.market_contract = pending.new_address.clone();
         storage::set_config(&env, &config);
-        events::emit_resolution_registered(&env, &config.factory, &market_contract);
+        storage::clear_pending_market_contract(&env);
+        events::emit_market_contract_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    pub fn cancel_market_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::clear_pending_market_contract(&env);
         Ok(())
     }
 

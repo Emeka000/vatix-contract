@@ -58,3 +58,10 @@ pub struct ResolutionConfig {
     /// 30-character maximum on struct field names.)
     pub challenge_window_secs: u64,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingAddressChange {
+    pub new_address: Address,
+    pub effective_at: u64,
+}

@@ -8,6 +8,8 @@ pub enum StorageKey {
     Candidate(u32),
     CandidateByMarket(u32),
     ProposerCollateral(Address),
+    PendingFactory,
+    PendingMarketContract,
 }
 
 pub fn has_config(env: &Env) -> bool {
@@ -23,6 +25,30 @@ pub fn get_config(env: &Env) -> ResolutionConfig {
 
 pub fn set_config(env: &Env, config: &ResolutionConfig) {
     env.storage().persistent().set(&StorageKey::Config, config);
+}
+
+pub fn get_pending_factory(env: &Env) -> Option<crate::types::PendingAddressChange> {
+    env.storage().persistent().get(&StorageKey::PendingFactory)
+}
+
+pub fn set_pending_factory(env: &Env, pending: &crate::types::PendingAddressChange) {
+    env.storage().persistent().set(&StorageKey::PendingFactory, pending);
+}
+
+pub fn clear_pending_factory(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingFactory);
+}
+
+pub fn get_pending_market_contract(env: &Env) -> Option<crate::types::PendingAddressChange> {
+    env.storage().persistent().get(&StorageKey::PendingMarketContract)
+}
+
+pub fn set_pending_market_contract(env: &Env, pending: &crate::types::PendingAddressChange) {
+    env.storage().persistent().set(&StorageKey::PendingMarketContract, pending);
+}
+
+pub fn clear_pending_market_contract(env: &Env) {
+    env.storage().persistent().remove(&StorageKey::PendingMarketContract);
 }
 
 pub fn increment_candidate_id(env: &Env) -> u32 {

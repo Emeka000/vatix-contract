@@ -364,6 +364,7 @@ pub fn validate_fee_waiver_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, BytesN};
 
     #[test]
     fn test_valid_market_creation() {

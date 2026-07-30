@@ -118,6 +118,9 @@ pub enum ContractError {
     /// deadline — submit a freshly signed message instead.
     OracleMessageExpired = 24,
 
+    /// The requested threshold is invalid (e.g., higher than signer count or zero).
+    InvalidThresholdQuorum = 25,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///

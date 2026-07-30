@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Regression corpus for share/fee/payout math (#504).
 //!
 //! Loads `test-vectors/fee-math.json` at test time and replays every case

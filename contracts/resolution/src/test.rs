@@ -1,7 +1,6 @@
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, String,
 };
 
@@ -139,8 +138,13 @@ fn admin_can_update_factory_registration() {
     let env = Env::default();
     let (client, admin, _) = setup(&env);
 
+    set_time(&env, 100);
     let new_factory = Address::generate(&env);
-    client.set_factory(&admin, &new_factory);
+    client.propose_factory(&admin, &new_factory);
+    
+    set_time(&env, 100 + 172_800);
+    client.execute_factory();
+    
     assert_eq!(client.get_config().factory, new_factory);
 }
 

@@ -128,6 +128,24 @@ pub fn emit_admin_transferred(env: &Env, old_admin: &Address, new_admin: &Addres
     .publish(env);
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferProposed {
+    #[topic]
+    pub old_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_admin_transfer_proposed(env: &Env, old_admin: &Address, new_admin: &Address, effective_at: u64) {
+    AdminTransferProposed {
+        old_admin: old_admin.clone(),
+        new_admin: new_admin.clone(),
+        effective_at,
+    }.publish(env);
+}
+
 // ── Market contract rotation ──────────────────────────────────────────────────
 
 #[contractevent]
@@ -149,6 +167,36 @@ pub fn emit_market_contract_updated(
         new_market_contract: new_market_contract.clone(),
     }
     .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractProposed {
+    #[topic]
+    pub new_market_contract: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_market_contract_proposed(env: &Env, new_market_contract: &Address, effective_at: u64) {
+    MarketContractProposed {
+        new_market_contract: new_market_contract.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractSet {
+    #[topic]
+    pub new_market_contract: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_market_contract_set(env: &Env, new_market_contract: &Address) {
+    MarketContractSet {
+        new_market_contract: new_market_contract.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
 }
 
 // ── Market registry (add/remove) ──────────────────────────────────────────────
