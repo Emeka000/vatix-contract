@@ -48,7 +48,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | `set_market_contract` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock. |
 | `pause`                | ✅ | ✅ |
 | `unpause`              | ✅ | ✅ |
-| `set_stakeholders`     | ✅ | ✅ |
+| `set_stakeholders` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock (Issue #689); proposal and execution events now carry the full `(stakeholder, share_bps)` payload for indexer reconstruction. |
 | `distribute_fees`      | ✅ | ✅ |
 
 `collect_fee` requires auth from `caller` but intentionally checks
@@ -63,12 +63,21 @@ identity — it is a market-contract-facing entrypoint, not an admin mutator.
 | `set_default_challenge_window`  | ✅ | ✅ (`require_admin`) |
 | `set_factory` (propose/execute/cancel) | ✅ | ✅ (`require_admin`) | Updated to use propose/execute/cancel timelock. |
 | `set_market_contract` (propose/execute/cancel) | ✅ | ✅ (`require_admin`) | Updated to use propose/execute/cancel timelock. |
+| `set_treasury` (propose/execute/cancel) | ✅ | ✅ (`require_admin`) | Updated to use propose/execute/cancel timelock (Issue #687) — the slash treasury cut can no longer be redirected instantly. |
 | `slash_collateral`              | ✅ | ✅ (`require_admin`) |
 
 `propose`, `challenge`, `appeal`, `finalize`, and `deposit_collateral` all
 `require_auth()` the acting party (proposer/challenger/finalizer) but are
 deliberately open to any caller — the bond, challenge window, and finalize
 conditions are the access control, not an admin check.
+
+## Outcome-token contract (`contracts/outcome-token/src/lib.rs`)
+
+| Entrypoint                     | require_auth | admin-equality check | Notes |
+|---------------------------------|:---:|:---:|-------|
+| `initialize`                   | ✅ | n/a (bootstraps admin) | |
+| `set_market_contract` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock (Issue #691) — mint/burn authority can no longer rotate instantly. |
+| `set_metadata`                  | ✅ | ✅ | |
 
 ## Conclusion
 

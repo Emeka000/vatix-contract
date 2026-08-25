@@ -439,12 +439,17 @@ impl TreasuryContract {
 
     // ── Stakeholder fee distribution (#485) ────────────────────────────────────
 
-    /// Configure the stakeholder revenue-share list (admin only).
+    /// Propose a new stakeholder revenue-share list, subject to the same
+    /// `ADDRESS_TIMELOCK_SECONDS` delay used by [`Self::propose_admin`] /
+    /// [`Self::propose_market_contract`] (Issue #689). Admin only.
     ///
     /// `stakeholders` is a list of `(address, share_bps)` pairs. `share_bps`
-    /// values must sum to exactly 10_000 (100%); this fully replaces any
-    /// previously configured list.
-    pub fn set_stakeholders(
+    /// values must sum to exactly 10_000 (100%); once executed this fully
+    /// replaces any previously configured list. The full payload is emitted
+    /// on [`StakeholdersProposed`](events::StakeholdersProposed) so an
+    /// off-chain indexer can reconstruct the pending split without an extra
+    /// on-chain read.
+    pub fn propose_stakeholders(
         env: Env,
         caller: Address,
         stakeholders: Vec<(Address, u32)>,
@@ -471,10 +476,66 @@ impl TreasuryContract {
             return Err(TreasuryError::InvalidStakeholderWeights);
         }
 
-        let count = stakeholders.len();
-        storage::set_stakeholders(&env, &stakeholders);
-        events::emit_stakeholders_updated(&env, count);
+        let effective_at = env.ledger().timestamp() + ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_stakeholders(
+            &env,
+            &storage::PendingStakeholders {
+                stakeholders: stakeholders.clone(),
+                effective_at,
+            },
+        );
+
+        let mut addrs: Vec<Address> = Vec::new(&env);
+        let mut shares: Vec<u32> = Vec::new(&env);
+        for (addr, share_bps) in stakeholders.iter() {
+            addrs.push_back(addr.clone());
+            shares.push_back(share_bps);
+        }
+        events::emit_stakeholders_proposed(&env, &addrs, &shares, effective_at);
         Ok(())
+    }
+
+    /// Apply a previously-proposed stakeholder list once its timelock has
+    /// elapsed (Issue #689). Callable by anyone — the timelock itself is the
+    /// access control.
+    pub fn execute_stakeholders(env: Env) -> Result<(), TreasuryError> {
+        let pending = storage::get_pending_stakeholders(&env)
+            .ok_or(TreasuryError::NoPendingStakeholderChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(TreasuryError::TimelockNotElapsed);
+        }
+
+        storage::set_stakeholders(&env, &pending.stakeholders);
+        storage::clear_pending_stakeholders(&env);
+
+        let mut addrs: Vec<Address> = Vec::new(&env);
+        let mut shares: Vec<u32> = Vec::new(&env);
+        for (addr, share_bps) in pending.stakeholders.iter() {
+            addrs.push_back(addr.clone());
+            shares.push_back(share_bps);
+        }
+        events::emit_stakeholders_updated(&env, &addrs, &shares);
+        Ok(())
+    }
+
+    /// Cancel a pending stakeholder list change before it takes effect.
+    pub fn cancel_stakeholders(env: Env, caller: Address) -> Result<(), TreasuryError> {
+        caller.require_auth();
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+        storage::clear_pending_stakeholders(&env);
+        Ok(())
+    }
+
+    /// Return the currently pending stakeholder change, if any (Issue #689).
+    pub fn get_pending_stakeholders(env: Env) -> Option<storage::PendingStakeholders> {
+        storage::get_pending_stakeholders(&env)
     }
 
     /// Return the configured `(stakeholder, share_bps)` list.

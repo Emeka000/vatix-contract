@@ -629,14 +629,47 @@ impl ResolutionContract {
 
     // ── Terminal arbitration / void path (dispute-game economics) ──────────────
 
-    /// Register (or replace) the treasury address that receives the
-    /// treasury-cut share of slashed bonds. Optional — while unset, that
-    /// share simply stays in this contract's own collateral-token balance.
-    pub fn set_treasury(env: Env, admin: Address, treasury: Address) -> Result<(), ContractError> {
+    /// Propose registering (or replacing) the treasury address that
+    /// receives the treasury-cut share of slashed bonds, subject to the same
+    /// `ADDRESS_TIMELOCK_SECONDS` delay used by [`Self::propose_factory`] /
+    /// [`Self::propose_market_contract`] (Issue #687). This prevents an
+    /// admin from redirecting the slash treasury cut instantly. Call
+    /// [`Self::execute_treasury`] once the timelock has elapsed to apply it.
+    pub fn propose_treasury(env: Env, admin: Address, treasury: Address) -> Result<(), ContractError> {
         admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
-        storage::set_treasury(&env, &treasury);
+        let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_treasury(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: treasury.clone(),
+                effective_at,
+            },
+        );
+        events::emit_treasury_proposed(&env, &treasury, effective_at);
+        Ok(())
+    }
+
+    /// Apply a previously-proposed treasury change once its timelock has
+    /// elapsed (Issue #687). Callable by anyone — the timelock itself is the
+    /// access control.
+    pub fn execute_treasury(env: Env) -> Result<Address, ContractError> {
+        let pending = storage::get_pending_treasury(&env).ok_or(ContractError::Unauthorized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::Unauthorized);
+        }
+        storage::set_treasury(&env, &pending.new_address);
+        storage::clear_pending_treasury(&env);
+        events::emit_treasury_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    /// Cancel a pending treasury address change before it takes effect.
+    pub fn cancel_treasury(env: Env, admin: Address) -> Result<(), ContractError> {
+        let config = storage::get_config(&env);
+        require_admin(&admin, &config)?;
+        storage::clear_pending_treasury(&env);
         Ok(())
     }
 

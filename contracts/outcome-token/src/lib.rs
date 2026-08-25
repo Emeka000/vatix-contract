@@ -63,20 +63,71 @@ impl OutcomeTokenContract {
         storage::get_config(&env)
     }
 
-    /// Update the market contract address allowed to mint/burn tokens.
-    pub fn set_market_contract(
+    /// Delay, in seconds, an admin-proposed `market_contract` (mint/burn
+    /// authority) rotation must wait before it can be applied via
+    /// [`Self::execute_market_contract`] (Issue #691). Matches the market
+    /// contract's own address-change timelock so the mint authority cannot
+    /// rotate instantly while the market side is already timelocked.
+    pub const MARKET_CONTRACT_TIMELOCK_SECONDS: u64 = 172_800;
+
+    /// Propose rotating the market contract address allowed to mint/burn
+    /// tokens, subject to a timelock (Issue #691). Admin only. The change
+    /// does not apply immediately — call [`Self::execute_market_contract`]
+    /// once [`Self::MARKET_CONTRACT_TIMELOCK_SECONDS`] have elapsed.
+    pub fn propose_market_contract(
         env: Env,
         admin: Address,
         market_contract: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        let mut config = storage::get_config(&env);
+        let config = storage::get_config(&env);
         if admin != config.admin {
             return Err(ContractError::Unauthorized);
         }
-        config.market_contract = market_contract;
-        storage::set_config(&env, &config);
+        let effective_at = env.ledger().timestamp() + Self::MARKET_CONTRACT_TIMELOCK_SECONDS;
+        storage::set_pending_market_contract(
+            &env,
+            &crate::types::PendingAddressChange {
+                new_address: market_contract.clone(),
+                effective_at,
+            },
+        );
+        events::emit_market_contract_proposed(&env, &market_contract, effective_at);
         Ok(())
+    }
+
+    /// Apply a previously-proposed `market_contract` rotation once its
+    /// timelock has elapsed (Issue #691). Callable by anyone — the timelock
+    /// itself is the access control.
+    pub fn execute_market_contract(env: Env) -> Result<Address, ContractError> {
+        let pending = storage::get_pending_market_contract(&env)
+            .ok_or(ContractError::NoPendingMarketContractChange)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(ContractError::TimelockNotElapsed);
+        }
+        let mut config = storage::get_config(&env);
+        config.market_contract = pending.new_address.clone();
+        storage::set_config(&env, &config);
+        storage::clear_pending_market_contract(&env);
+        events::emit_market_contract_set(&env, &pending.new_address);
+        Ok(pending.new_address)
+    }
+
+    /// Cancel a pending `market_contract` rotation before it takes effect.
+    pub fn cancel_market_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        let config = storage::get_config(&env);
+        if admin != config.admin {
+            return Err(ContractError::Unauthorized);
+        }
+        storage::clear_pending_market_contract(&env);
+        Ok(())
+    }
+
+    /// Return the currently pending `market_contract` rotation, if any
+    /// (Issue #691).
+    pub fn get_pending_market_contract(env: Env) -> Option<crate::types::PendingAddressChange> {
+        storage::get_pending_market_contract(&env)
     }
 
     /// Update the SAC metadata (name and symbol). Admin only.
