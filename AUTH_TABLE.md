@@ -24,7 +24,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 | `cancel_market`                 | ✅ | ✅ | |
 | `set_adapter_enabled`           | ✅ | ✅ | |
 | `update_market_oracle` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock. |
-| `set_threshold_signers`         | ✅ | ✅ | |
+| `threshold_signers` (propose/execute/cancel) | ✅ | ✅ | Issue #684: the legacy instant `set_threshold_signers` entrypoint was removed — it bypassed the 172,800s (48h) timelock that `propose_threshold_signers`/`execute_threshold_signers` enforce. `propose_threshold_signers` and `cancel_threshold_signers` require admin auth; `execute_threshold_signers` is intentionally public once the timelock elapses, same pattern as `execute_fee_rate_change`. |
 | `set_treasury_contract` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock. |
 | `set_outcome_token_contract` (propose/execute/cancel) | ✅ | ✅ | Updated to use propose/execute/cancel timelock. |
 | `set_resolution_contract` (propose/execute/cancel) | ✅ | ✅ | Added and updated to use propose/execute/cancel timelock. |

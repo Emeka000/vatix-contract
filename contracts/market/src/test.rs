@@ -1707,7 +1707,10 @@ mod test {
 
         let (signer, signature) = generate_test_keypair_and_sign(&env, market_id, true);
         let signers = soroban_sdk::vec![&env, signer];
-        client.set_threshold_signers(&admin, &signers, &1u32);
+        client.propose_threshold_signers(&admin, &signers, &1u32);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::FEE_RATE_TIMELOCK_SECONDS);
+        client.execute_threshold_signers();
         let signatures = soroban_sdk::vec![&env, signature];
 
         // Registering the challenge-based resolution contract selects that
@@ -1746,7 +1749,10 @@ mod test {
 
         let (signer, signature) = generate_test_keypair_and_sign(&env, market_id, true);
         let signers = soroban_sdk::vec![&env, signer];
-        client.set_threshold_signers(&admin, &signers, &1u32);
+        client.propose_threshold_signers(&admin, &signers, &1u32);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::FEE_RATE_TIMELOCK_SECONDS);
+        client.execute_threshold_signers();
         let signatures = soroban_sdk::vec![&env, signature];
 
         assert_eq!(
@@ -2407,7 +2413,7 @@ mod test {
             Err(Ok(ContractError::NotAdmin))
         );
         assert_eq!(
-            client.try_set_threshold_signers(&stranger, &soroban_sdk::Vec::new(&env), &1u32),
+            client.try_propose_threshold_signers(&stranger, &soroban_sdk::Vec::new(&env), &1u32),
             Err(Ok(ContractError::NotAdmin))
         );
         assert_eq!(

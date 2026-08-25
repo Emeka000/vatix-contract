@@ -489,6 +489,25 @@ impl TreasuryContract {
     /// integer-division remainder (dust) stays in the treasury balance and
     /// rolls into the next distribution.
     ///
+    /// # Dust remainder (issue #688)
+    /// Because each share is floor-divided, `sum(amount)` across all
+    /// stakeholders can be up to `stakeholders.len() - 1` stroops less than
+    /// `balance`. That leftover is **not** dropped: `remaining = balance -
+    /// distributed` is written back to `TokenBalance(token)` before any
+    /// transfer is made, so it is simply carried forward and gets
+    /// distributed — proportionally, like any other collected fee — the
+    /// next time `distribute_fees` runs for this token.
+    ///
+    /// # CEI ordering (issue #688)
+    /// All per-stakeholder amounts are computed and the treasury's own
+    /// balance is persisted (`storage::set_token_balance`) *before* any
+    /// external `token_client.transfer` call is made, per
+    /// Checks-Effects-Interactions (see `docs/reentrancy-cei-audit.md`).
+    /// This closes a reentrancy window where a malicious/upgraded token
+    /// contract's `transfer` callback could otherwise re-enter
+    /// `distribute_fees` while the old (undecremented) balance was still
+    /// visible in storage.
+    ///
     /// # Errors
     /// - [`TreasuryError::NotInitialized`] – treasury not initialized.
     /// - [`TreasuryError::ContractPaused`] – treasury is paused.
@@ -528,9 +547,13 @@ impl TreasuryContract {
             return Err(TreasuryError::InsufficientBalance);
         }
 
-        let treasury = env.current_contract_address();
-        let token_client = token::Client::new(&env, &token);
-
+        // ── Checks/Effects: compute every stakeholder's share and persist the
+        // reduced balance *before* any external token transfer is made
+        // (CEI — see docs/reentrancy-cei-audit.md). Floor division on
+        // `share_bps` means `sum(amount)` can be a few stroops less than
+        // `balance`; that dust is intentionally *not* zeroed out here — see
+        // the doc comment on `distribute_fees` for where it goes.
+        let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut distributed: i128 = 0;
         for (stakeholder, share_bps) in stakeholders.iter() {
             let amount = balance
@@ -538,15 +561,31 @@ impl TreasuryContract {
                 .ok_or(TreasuryError::ArithmeticOverflow)?
                 / BPS_DENOMINATOR;
             if amount > 0 {
-                token_client.transfer(&treasury, &stakeholder, &amount);
                 distributed = distributed
                     .checked_add(amount)
                     .ok_or(TreasuryError::ArithmeticOverflow)?;
+                payouts.push_back((stakeholder, amount));
             }
         }
 
+        // Floor-division dust remainder: `balance - distributed` is whatever
+        // is left after every stakeholder's basis-point share is rounded
+        // down. It is credited straight back into the treasury's own
+        // `TokenBalance(token)` below (not dropped, and not sent to any one
+        // stakeholder), so it simply rolls forward and is redistributed —
+        // proportionally, same as any other collected fee — the next time
+        // `distribute_fees` is called for this token.
         let remaining = balance - distributed;
         storage::set_token_balance(&env, &token, remaining);
+
+        // ── Interactions: only after state is committed do we make the
+        // external token transfer calls.
+        let treasury = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        for (stakeholder, amount) in payouts.iter() {
+            token_client.transfer(&treasury, &stakeholder, &amount);
+        }
+
         events::emit_fees_distributed(&env, &token, distributed, remaining, stakeholders.len());
         Ok(())
     }

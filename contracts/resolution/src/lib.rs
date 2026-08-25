@@ -290,12 +290,10 @@ impl ResolutionContract {
         );
         verification?;
 
-        // Lock the proposer's bond in this contract's collateral-token
-        // balance. Uses the same token as the market's collateral so a
-        // single `finalize` refund path can rely on it.
+        // Collateral token for the bond this proposal must post. The actual
+        // transfer is deferred until after the candidate/status state below
+        // has been persisted — see the CEI note ahead of the transfer call.
         let collateral_token = get_collateral_token(&env, &config, market_id);
-        let token_client = TokenClient::new(&env, &collateral_token);
-        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
 
         let proposed_at = env.ledger().timestamp();
         // Validate signature expiry must be in the future (at or after proposed_at)
@@ -308,7 +306,7 @@ impl ResolutionContract {
             outcome,
             signature,
             signature_expiry,
-            proposer,
+            proposer: proposer.clone(),
             evidence_uri,
             proposed_at,
             challenge_deadline: proposed_at + challenge_window_seconds,
@@ -320,8 +318,21 @@ impl ResolutionContract {
             bond_amount,
         };
 
+        // Effects: persist the new candidate (status = Proposed) *before*
+        // making any external call (CEI — issue #686, see
+        // docs/reentrancy-cei-audit.md). Previously the bond transfer below
+        // ran first, leaving a window where a malicious/upgraded token
+        // contract's `transfer` callback could re-enter this contract while
+        // no candidate record existed yet for this market.
         storage::set_candidate(&env, &candidate);
         events::emit_candidate_proposed(&env, &candidate);
+
+        // Interactions: lock the proposer's bond only after state is
+        // committed. Uses the same token as the market's collateral so a
+        // single `finalize` refund path can rely on it.
+        let token_client = TokenClient::new(&env, &collateral_token);
+        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
+
         Ok(candidate.id)
     }
 
@@ -378,9 +389,13 @@ impl ResolutionContract {
 
         let config = storage::get_config(&env);
         let collateral_token = get_collateral_token(&env, &config, candidate.market_id);
-        let this = env.current_contract_address();
-        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
 
+        // Effects: mutate the candidate's status/challenger record and
+        // persist it *before* the external bond transfer (CEI — issue #686,
+        // see docs/reentrancy-cei-audit.md). Previously the transfer ran
+        // first, leaving a window where a malicious/upgraded token
+        // contract's `transfer` callback could re-enter this contract while
+        // the candidate was still (incorrectly) `Proposed`.
         candidate.status = CandidateStatus::Challenged;
         candidate.challenged_by = Some(challenger.clone());
         candidate.challenge_uri = Some(challenge_uri.clone());
@@ -394,6 +409,12 @@ impl ResolutionContract {
             &challenge_uri,
             bond_amount,
         );
+
+        // Interactions: lock the challenger's bond only after state is
+        // committed.
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
+
         Ok(())
     }
 
