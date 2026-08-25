@@ -549,11 +549,24 @@ impl ResolutionContract {
         // Cross-contract callback: resolve the market with the finalized outcome.
         // The Finalized status is already persisted above, so a second call to
         // finalize(candidate_id) will be rejected before reaching this point.
+        //
+        // Args must match `Market::resolve_market`'s real ABI (#683):
+        // (resolver: Address, market_id: String, outcome: bool, signature:
+        // BytesN<64>, expires_at: u64) — the old call used a mock ABI (bare
+        // u32 market_id, no resolver/expires_at) that silently mismatched
+        // the deployed market contract's actual entrypoint. `resolver` is
+        // this contract's own address (it self-authorizes as the direct
+        // invoker, matching how `arbitrate_uphold_proposer` settles
+        // disputes), and `expires_at` reuses the candidate's already-checked
+        // `signature_expiry` so `resolve_market`'s own expiry gate stays
+        // consistent with the check `finalize` already performed above.
         let args: Vec<Val> = soroban_sdk::vec![
             &env,
-            candidate.market_id.into_val(&env),
+            env.current_contract_address().into_val(&env),
+            market_id_to_string(&env, candidate.market_id).into_val(&env),
             candidate.outcome.into_val(&env),
             candidate.signature.clone().into_val(&env),
+            candidate.signature_expiry.into_val(&env),
         ];
         let _: () = env.invoke_contract(
             &config.market_contract,
@@ -682,11 +695,14 @@ impl ResolutionContract {
 
         events::emit_candidate_arbitrated(&env, candidate_id, candidate.market_id, candidate.outcome);
 
+        // Same ABI fix as `finalize` (#683) — see the comment there.
         let args: Vec<Val> = soroban_sdk::vec![
             &env,
-            candidate.market_id.into_val(&env),
+            env.current_contract_address().into_val(&env),
+            market_id_to_string(&env, candidate.market_id).into_val(&env),
             candidate.outcome.into_val(&env),
             candidate.signature.clone().into_val(&env),
+            candidate.signature_expiry.into_val(&env),
         ];
         let _: () = env.invoke_contract(
             &config.market_contract,
@@ -803,6 +819,32 @@ fn validate_uri(uri: &String) -> Result<(), ContractError> {
         return Err(ContractError::InvalidEvidenceUri);
     }
     Ok(())
+}
+
+/// Format `market_id` as its base-10 ASCII representation.
+///
+/// `Market::resolve_market` takes `market_id` as a `String` (parsed back to
+/// `u32` via `validation::parse_market_id`), while every other market
+/// entrypoint this contract calls (`verify_signature`,
+/// `get_collateral_token`, `get_market_status`) takes the raw `u32`. This
+/// bridges the two so `resolve_market`'s cross-contract call uses the real
+/// ABI instead of a bare `u32` (#683).
+fn market_id_to_string(env: &Env, market_id: u32) -> String {
+    let mut buf = [0u8; 10];
+    let mut n = market_id;
+    let mut i = buf.len();
+    if n == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    } else {
+        while n > 0 {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+    }
+    let s = core::str::from_utf8(&buf[i..]).unwrap_or("0");
+    String::from_str(env, s)
 }
 
 /// Look up a market's collateral token via a cross-contract call to the

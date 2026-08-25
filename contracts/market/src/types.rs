@@ -149,6 +149,31 @@ pub struct PendingAdapterTypeChange {
     pub effective_at: u64,
 }
 
+/// Per-market Reflector/Pyth oracle adapter configuration (#681).
+///
+/// `Market` carries an `adapter_type` but, before this, had nowhere to store
+/// the Reflector asset/contract or the price threshold a market resolves
+/// against — so an admin could mark a market `AdapterType::Reflector` but
+/// there was no way to actually configure it. Stored separately (keyed by
+/// `market_id`, see `StorageKey::MarketAdapterConfig` in `storage.rs`)
+/// rather than as inline `Market` fields so existing `Market` storage
+/// entries need no migration; a market with no entry here simply has no
+/// adapter config and `oracle::verify_market_outcome` falls back to Ed25519
+/// (see #680).
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct MarketAdapterConfig {
+    /// Address of the Reflector (or Pyth) oracle contract on the target
+    /// network.
+    pub oracle_contract: Address,
+    /// Reflector asset identifier queried via `lastprice`. Unused for Pyth.
+    pub asset: crate::oracle_adapter::Asset,
+    /// Price threshold, in the oracle's native fixed-point units (Reflector:
+    /// 7 decimals). The market resolves YES when the fetched price is
+    /// `>= resolution_price`.
+    pub resolution_price: i128,
+}
+
 /// A 32-byte change (like oracle pubkey) awaiting its timelock delay before it can take effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]

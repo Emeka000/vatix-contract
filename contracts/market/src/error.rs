@@ -121,6 +121,14 @@ pub enum ContractError {
     /// The requested threshold is invalid (e.g., higher than signer count or zero).
     InvalidThresholdQuorum = 25,
 
+    /// A Reflector/Pyth price observation is older than the adapter's
+    /// maximum allowed staleness window (#682).
+    ///
+    /// Both adapters read a timestamp/publish_time alongside the price but
+    /// previously never checked it — a disconnected or slow oracle feed
+    /// could otherwise resolve a market against an arbitrarily old price.
+    StalePrice = 26,
+
     // ========== Validation Errors (30-39) ==========
     /// Price is out of valid range (must be between 0 and 1).
     ///
@@ -365,6 +373,8 @@ mod tests {
             (ContractError::InvalidOutcome, 22),
             (ContractError::OraclePriceUnavailable, 23),
             (ContractError::OracleMessageExpired, 24),
+            (ContractError::InvalidThresholdQuorum, 25),
+            (ContractError::StalePrice, 26),
             (ContractError::InvalidPrice, 30),
             (ContractError::InvalidQuantity, 31),
             (ContractError::InvalidTimestamp, 32),

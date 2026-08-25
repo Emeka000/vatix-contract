@@ -299,8 +299,12 @@ pub fn verify_market_outcome(
 ) -> Result<(), ContractError> {
     match adapter_type {
         AdapterType::Ed25519 => verify_oracle_signature(env, market_id, outcome, proof, &market.oracle_pubkey),
-        AdapterType::Reflector | AdapterType::Pyth => {
+        AdapterType::Reflector => verify_via_reflector(env, market_id, market, outcome, proof),
+        AdapterType::Pyth => {
             if crate::storage::is_adapter_enabled(env, &adapter_type) {
+                // Pyth needs a raw Wormhole VAA proof (`Bytes`), not the
+                // fixed 64-byte Ed25519 signature this entrypoint accepts —
+                // full wiring is a follow-up (#680 wires Reflector first).
                 Err(ContractError::UnauthorizedOracle)
             } else {
                 // Adapter disabled/unavailable — fall back to raw Ed25519 verification.
@@ -308,6 +312,35 @@ pub fn verify_market_outcome(
             }
         }
     }
+}
+
+/// Dispatch to the on-chain Reflector adapter when it is enabled and
+/// configured for `market_id`; otherwise fall back to Ed25519 (#680).
+///
+/// Requires a `MarketAdapterConfig` to have been set via
+/// `MarketContract::set_market_adapter_config` (#681, admin-only) — if the
+/// adapter is enabled but this market has no config, that is a
+/// misconfiguration and fails closed with `OraclePriceUnavailable` rather
+/// than silently falling back to Ed25519.
+fn verify_via_reflector(
+    env: &Env,
+    market_id: u32,
+    market: &Market,
+    outcome: bool,
+    proof: &BytesN<64>,
+) -> Result<(), ContractError> {
+    if !crate::storage::is_adapter_enabled(env, &AdapterType::Reflector) {
+        return verify_oracle_signature(env, market_id, outcome, proof, &market.oracle_pubkey);
+    }
+    let config = crate::storage::get_market_adapter_config(env, market_id)
+        .ok_or(ContractError::OraclePriceUnavailable)?;
+    use crate::oracle_adapter::OracleAdapter as _;
+    let adapter = crate::oracle_adapter::ReflectorAdapter {
+        contract_id: config.oracle_contract,
+        asset: config.asset,
+        resolution_price: config.resolution_price,
+    };
+    adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env))
 }
 
 /// Verify that the market outcome is valid using V2 oracle signatures.
@@ -333,8 +366,35 @@ pub fn verify_market_outcome_v2(
             proof,
             &market.oracle_pubkey,
         ),
-        AdapterType::Reflector | AdapterType::Pyth => {
+        AdapterType::Reflector => {
             if crate::storage::is_adapter_enabled(env, &adapter_type) {
+                let config = crate::storage::get_market_adapter_config(env, market_id)
+                    .ok_or(ContractError::OraclePriceUnavailable)?;
+                use crate::oracle_adapter::OracleAdapter as _;
+                let adapter = crate::oracle_adapter::ReflectorAdapter {
+                    contract_id: config.oracle_contract,
+                    asset: config.asset,
+                    resolution_price: config.resolution_price,
+                };
+                adapter.verify_outcome(env, market_id, outcome, &Bytes::new(env))
+            } else {
+                // Adapter disabled/unavailable — fall back to raw Ed25519 V2 verification.
+                verify_oracle_signature_v2(
+                    env,
+                    passphrase_hash,
+                    market_id,
+                    outcome,
+                    valid_until,
+                    epoch,
+                    proof,
+                    &market.oracle_pubkey,
+                )
+            }
+        }
+        AdapterType::Pyth => {
+            if crate::storage::is_adapter_enabled(env, &adapter_type) {
+                // See `verify_market_outcome` — Pyth needs a raw VAA proof,
+                // not fitted by this V2 entrypoint's fixed signature param.
                 Err(ContractError::UnauthorizedOracle)
             } else {
                 // Adapter disabled/unavailable — fall back to raw Ed25519 V2 verification.
