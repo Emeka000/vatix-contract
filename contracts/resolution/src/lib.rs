@@ -156,6 +156,7 @@ impl ResolutionContract {
     pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
 
     pub fn propose_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
@@ -184,6 +185,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_factory(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::clear_pending_factory(&env);
@@ -195,6 +197,7 @@ impl ResolutionContract {
         admin: Address,
         market_contract: Address,
     ) -> Result<(), ContractError> {
+        admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
@@ -223,6 +226,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_market_contract(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::clear_pending_market_contract(&env);
