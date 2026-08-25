@@ -45,4 +45,12 @@ pub enum ContractError {
     /// The operation is blocked by the current emergency mode (Issue #662).
     /// Check [`crate::storage::get_emergency_mode`] for the active mode.
     EmergencyModeActive = 50,
+    /// The on-chain storage schema version does not match the version this
+    /// contract build expects (Issue #696). Mirrors
+    /// `vatix_market_contract::ContractError::UpgradeRequired` /
+    /// `vatix_treasury_contract::TreasuryError::UpgradeRequired` — a partial
+    /// cross-contract upgrade that leaves this deployment's storage on a
+    /// stale schema fails closed here instead of silently corrupting state
+    /// (e.g. via `finalize`).
+    UpgradeRequired = 51,
 }

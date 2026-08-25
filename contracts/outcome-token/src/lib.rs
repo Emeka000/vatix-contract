@@ -11,6 +11,7 @@
 //!
 //! | Key                                      | Type      | Description                                 |
 //! |------------------------------------------|-----------|---------------------------------------------|
+//! | `StorageVersion`                         | `u32`     | Schema version guard (#696)                 |
 //! | `Config`                                 | `OutcomeTokenConfig` | Admin and market contract addresses |
 //! | `Balance(u32, Address, TokenKind)`       | `i128`    | Per-user, per-market, per-side token balance|
 //! | `TotalSupply(u32, TokenKind)`            | `i128`    | Per-market, per-side total token supply     |
@@ -56,6 +57,7 @@ impl OutcomeTokenContract {
                 symbol,
             },
         );
+        storage::set_version(&env);
         Ok(())
     }
 
@@ -70,6 +72,7 @@ impl OutcomeTokenContract {
         market_contract: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let mut config = storage::get_config(&env);
         if admin != config.admin {
             return Err(ContractError::Unauthorized);
@@ -87,6 +90,7 @@ impl OutcomeTokenContract {
         symbol: String,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let mut config = storage::get_config(&env);
         if admin != config.admin {
             return Err(ContractError::Unauthorized);
@@ -125,6 +129,11 @@ impl OutcomeTokenContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
+        // Storage-version guard (Issue #696): a stale/partially-upgraded
+        // deployment must fail closed here rather than let `mint` write
+        // balances/supply under a storage layout the compiled contract no
+        // longer understands.
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         config.market_contract.require_auth();
 
@@ -155,6 +164,7 @@ impl OutcomeTokenContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         config.market_contract.require_auth();
 
@@ -193,6 +203,7 @@ impl OutcomeTokenContract {
             return Err(ContractError::InvalidAmount);
         }
         from.require_auth();
+        storage::assert_version(&env)?;
 
         let config = storage::get_config(&env);
         let status: MarketStatus = env.invoke_contract(
