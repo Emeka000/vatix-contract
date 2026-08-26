@@ -19,6 +19,14 @@ soroban-sdk = "23"
 # CryptoRng in v3. Pinning to the exact 2.2.0 release keeps tests compilable.
 ed25519-dalek = "=2.2.0"
 
+# NOTE: the pin above only constrains crates in this workspace that opt in
+# via `{ workspace = true }` — it does NOT force soroban-env-host's own
+# (unconstrained `>= 2.0.0`) transitive dependency on ed25519-dalek to the
+# same version. Cargo can't "patch" a crate to a different version from the
+# *same* registry source (`[patch]` requires a different source). The only
+# reliable fix is a committed `Cargo.lock` — see the note in `.gitignore`
+# and `Cargo.lock`'s own presence in this repo (#701).
+
 # The workspace root doubles as a package whose only purpose is to host the
 # end-to-end integration tests under `tests/`. It ships no library code.
 [package]

@@ -357,7 +357,7 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
 
-        let mut markets = soroban_sdk::vec![&env, pending.new_address.clone()];
+        let markets = soroban_sdk::vec![&env, pending.new_address.clone()];
         storage::set_authorized_markets(&env, &markets);
         storage::clear_pending_market_contract(&env);
 

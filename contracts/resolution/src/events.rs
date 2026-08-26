@@ -314,7 +314,7 @@ pub fn emit_candidate_appealed(env: &Env, candidate: &crate::types::ResolutionCa
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct ResolutionEmergencyModeChanged {
+pub struct EmergencyModeChanged {
     #[topic]
     pub new_mode: crate::types::EmergencyMode,
     pub admin: Address,
@@ -322,7 +322,7 @@ pub struct ResolutionEmergencyModeChanged {
 }
 
 pub fn emit_emergency_mode_changed(env: &Env, new_mode: &crate::types::EmergencyMode, admin: &Address) {
-    ResolutionEmergencyModeChanged {
+    EmergencyModeChanged {
         new_mode: new_mode.clone(),
         admin: admin.clone(),
         changed_at: env.ledger().timestamp(),

@@ -96,23 +96,30 @@ for the actual invocation.
 // Simplified — see the actual file for full implementation
 const connect = useCallback(async () => {
   setIsConnecting(true);
+  setConnectError(null);
   try {
     // Dynamic import keeps this SSR-safe
     const { isConnected, getAddress } = await import("@stellar/freighter-api");
 
-    if (!(await isConnected())) {
-      // Extension installed but locked / not connected to the dApp
+    const connectedResult = await isConnected();
+    if (connectedResult.error || !connectedResult.isConnected) {
+      // Extension not installed, or installed but locked/not connected.
+      // Fail closed: surface a clear error, never invent an address.
+      setConnectError("Freighter is not connected. Install/unlock it.");
       setAddress(null);
       return;
     }
 
     const result = await getAddress();
-    if (result.address) {
-      setAddress(result.address);
+    if (result.error || !result.address) {
+      setConnectError("Failed to get wallet address from Freighter.");
+      return;
     }
-  } catch {
-    // Freighter not installed — fall back to stub for local UI work only
-    setAddress("GSTUB…VATIX00000000000000000000000000001");
+    setAddress(result.address);
+  } catch (err) {
+    // Freighter API unavailable or threw — fail closed with a visible error,
+    // never a fallback stub address (Issue #700).
+    setConnectError(`Freighter unavailable: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     setIsConnecting(false);
   }
@@ -124,9 +131,16 @@ const connect = useCallback(async () => {
 - **Never import `@stellar/freighter-api` at the top level** of any module.
   Always use `await import(...)` inside an async function. This keeps Next.js
   server-side rendering working and prevents `window is not defined` errors.
-- The stub address (`GSTUB…`) is intentional for offline UI development. Real
-  contract calls will fail gracefully with an "account not found" error from
-  Horizon.
+- **Fail closed — never a fallback stub address (Issue #700).** Every
+  failure path in `connect()` (extension not installed, locked, user
+  rejected, no address returned, unexpected throw) must set `address` to
+  `null` and populate `connectError` with a user-facing message. A
+  hardcoded/placeholder address (the old `GSTUB…` stub) silently masks
+  misconfiguration: the UI looks "connected" while every subsequent
+  contract call either fails with a confusing on-chain error or, worse,
+  succeeds against the wrong account. `scripts/check-no-wallet-fallback-stub.sh`
+  enforces this in CI — it fails the build if `GSTUB` or a string-literal
+  `setAddress(...)` call ever reappears under `apps/web/`.
 - Consume `useWallet()` in components; never import `WalletContext` directly.
 
 ```tsx
@@ -226,10 +240,30 @@ in `contract-client.ts` cover the most common types used by the Vatix contracts:
 
 ## Environment variables
 
-Copy `.env.local.example` to `.env.local` and fill in:
+`deployments/testnet.json` is the single source of truth for deployed
+contract IDs (see `deployments/README.md`). Don't hand-copy values out of it
+— run the sync script instead, which writes them straight into `.env.local`
+(Issue #700):
+
+```bash
+# From the repo root — creates .env.local from .env.local.example if it
+# doesn't exist yet, then writes every contract ID/RPC URL/passphrase
+# currently recorded in deployments/testnet.json into it.
+pnpm env:sync
+```
+
+Re-run `pnpm env:sync` after every redeploy that updates
+`deployments/testnet.json` — a stale ID in `.env.local` doesn't fail loudly,
+it just makes contract calls throw confusing errors (or point at a
+decommissioned contract), which is exactly the class of silent
+misconfiguration this project fails closed against (#700). The script never
+blanks out an existing value with an empty registry placeholder — it only
+writes fields that have a real deployed ID.
+
+`.env.local` ends up with:
 
 ```env
-# Contract addresses (from deployment — see scripts/deploy-testnet.sh)
+# Contract addresses (synced from deployments/testnet.json via `pnpm env:sync`)
 NEXT_PUBLIC_MARKET_CONTRACT_ID=C...
 NEXT_PUBLIC_TREASURY_CONTRACT_ID=C...
 NEXT_PUBLIC_OUTCOME_TOKEN_CONTRACT_ID=C...
@@ -261,8 +295,8 @@ these behaviors in any new code:
 
 | Situation | Behavior |
 |---|---|
-| Freighter extension not installed | `connect()` catches the import error and sets a UI-only stub address. Real invocations fail gracefully with a user-visible error message. |
-| Extension installed but locked / user not connected | `isConnected()` returns `false`; address is set to `null` and the connect button stays active. |
+| Freighter extension not installed | `connect()` catches the import/call error, sets `address` to `null`, and populates `connectError` with a user-visible message. Fails closed — never a fallback stub address (#700). |
+| Extension installed but locked / user not connected | `isConnected()` returns `false`; address is set to `null`, `connectError` is populated, and the connect button stays active. |
 | User rejects the signing popup | `signTransaction` returns `{ error: ... }`; `invokeContract` throws with `Freighter signing failed: <reason>`. Components must catch and display this. |
 | Transaction fails on-chain | `sendTransaction` returns `status: "ERROR"` or `getTransaction` returns `FAILED`; `invokeContract` throws with the result XDR. |
 | Polling timeout (>20 s) | Loop exits after 20 attempts; the function returns the last `hash` and `status`. The transaction may still confirm later. |
@@ -356,9 +390,10 @@ integration path on every push and PR:
 
 ```
 pnpm install
-  → pnpm build:bindings      # builds WASM + generates TS clients
-  → pnpm --filter web lint   # tsc --noEmit (type-checks all contract-client helpers)
-  → pnpm --filter web build  # Next.js production build
+  → pnpm build:bindings                              # builds WASM + generates TS clients
+  → bash scripts/check-no-wallet-fallback-stub.sh     # fails closed: no GSTUB fallback (#700)
+  → pnpm --filter web lint                            # tsc --noEmit (type-checks all contract-client helpers)
+  → pnpm --filter web build                           # Next.js production build
 ```
 
 A TypeScript error in `contract-client.ts`, `WalletContext.tsx`, or any

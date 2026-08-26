@@ -1,13 +1,25 @@
 # Close Market to Deposits Feature Implementation
 
 ## Overview
-This document describes the implementation of the "close market to new deposits" feature for the Vatix Market contract. This feature allows administrators to prevent new collateral deposits into a market while preserving all other functionality (trading, withdrawals, and settlement).
+This document describes the implementation of the "close market to new deposits" feature for the Vatix Market contract. This feature allows administrators to prevent new collateral deposits — and, as of #703, any new *trading* exposure — into a market while preserving all other functionality (withdrawals and settlement, plus trades that reduce risk).
+
+> **Update (#701 / #703):** the sections below describe the feature exactly
+> as originally shipped (issue #574) — `closed_to_deposits` gated only
+> `deposit_collateral`. That left a loophole: a user could still open brand
+> new exposure through `update_position` (buying shares) after a market was
+> closed, exactly bypassing the control this feature exists to provide.
+> #703 closed that gap — see
+> ["`update_position` gate (added by #703)"](#update_position-gate-added-by-703)
+> below for the current behavior. Everything else on this page (types,
+> events, `deposit_collateral`, admin function, storage version) is still
+> accurate as originally written.
 
 ## Feature Scope
 
 ### What This Feature Does
 - **Admin Control**: Administrators can invoke `close_market_to_deposits()` to prevent new deposits
-- **Preserve Functionality**: Existing positions can still be traded, and collateral can still be withdrawn
+- **Blocks new trading exposure too (#703)**: `update_position` calls that would *increase* a user's locked collateral are also rejected once closed — see below. Trades that reduce or hold the lock flat (closing out risk) are still always allowed.
+- **Preserve Functionality**: Existing positions can still be reduced/closed, and collateral can still be withdrawn
 - **Event Tracking**: Emits `MarketClosedToDeposits` when a market is closed
 - **Idempotent**: Closing an already-closed market is a no-op (succeeds silently)
 
@@ -16,6 +28,26 @@ This document describes the implementation of the "close market to new deposits"
 - Does NOT cancel existing positions
 - Does NOT force withdrawals
 - Does NOT change the market status (remains `Active`)
+- Does NOT block trades that reduce or hold flat a user's locked collateral (only *new* exposure is blocked, #703)
+
+## `update_position` gate (added by #703)
+
+`contracts/market/src/lib.rs`'s `update_position` computes the prospective
+locked collateral for the trade and rejects it with
+`ContractError::MarketClosedToDeposits` when **both** are true:
+
+```rust
+let lock_increased = prospective_locked > position.locked_collateral;
+if lock_increased && market.closed_to_deposits {
+    return Err(ContractError::MarketClosedToDeposits);
+}
+```
+
+Selling / closing out shares (which never increases the lock) is always
+allowed regardless of `closed_to_deposits` — only *opening or increasing*
+exposure is blocked. See the regression tests:
+- `contracts/market/src/test.rs` → `test_update_position_rejects_new_exposure_when_closed_to_deposits` (Issue #601 — market crate's own unit tests already covered this)
+- `tests/close_market_test.rs` → `matrix_trade_blocked_when_closed_increases_lock` / `matrix_trade_allowed_when_closed_reduces_lock` (Issue #703 — the integration-level regression test that previously asserted the *opposite*, now-incorrect behavior)
 
 ## Implementation Details
 

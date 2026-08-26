@@ -1,16 +1,22 @@
 //! Integration tests for the "close market to deposits" feature
 //!
-//! ## Operation matrix (Issue #574)
+//! ## Operation matrix (Issue #574, revised by #703)
 //!
-//! | Operation                       | Market open            | Closed to deposits      |
-//! |---------------------------------|------------------------|-------------------------|
-//! | `deposit_collateral`            | ✅ allowed             | ❌ blocked              |
-//! | `withdraw_unused_collateral`    | ✅ allowed             | ✅ allowed              |
-//! | `settle_position` (after resolve) | ✅ allowed           | ✅ allowed              |
-//! | `update_position` (trade)       | ✅ allowed             | ✅ allowed              |
+//! | Operation                             | Market open | Closed to deposits |
+//! |----------------------------------------|-------------|---------------------|
+//! | `deposit_collateral`                   | ✅ allowed  | ❌ blocked          |
+//! | `withdraw_unused_collateral`           | ✅ allowed  | ✅ allowed          |
+//! | `settle_position` (after resolve)      | ✅ allowed  | ✅ allowed          |
+//! | `update_position` — reduces/flat lock  | ✅ allowed  | ✅ allowed          |
+//! | `update_position` — increases lock     | ✅ allowed  | ❌ blocked          |
 //!
-//! The `closed_to_deposits` flag blocks **only** new collateral deposits;
-//! withdrawals, trades, and settlement remain fully functional.
+//! `closed_to_deposits` was originally documented (#574) as blocking only
+//! `deposit_collateral`, leaving `update_position` free to open new exposure
+//! through the trading path instead — the exact loophole #703 closes.
+//! `update_position` now blocks any trade that would *increase* a user's
+//! locked collateral once the market is closed; trades that reduce or hold
+//! the lock flat (closing out risk) are still always allowed, and
+//! withdrawals/settlement are never affected by `closed_to_deposits`.
 
 #[allow(dead_code)]
 mod helpers;
@@ -36,8 +42,7 @@ fn init_contract() -> (Env, Address, Address) {
     (env, admin, contract_id)
 }
 
-fn setup_market_with_collateral(
-) -> (Env, Address, Address, Address, u32, Address) {
+fn setup_market_with_collateral() -> (Env, Address, Address, Address, u32, Address) {
     let (env, admin, contract_id) = init_contract();
     let client = MarketContractClient::new(&env, &contract_id);
 
@@ -58,6 +63,7 @@ fn setup_market_with_collateral(
         &params.end_time,
         &params.oracle_pubkey,
         &params.collateral_token,
+        &None,
     );
 
     // User deposits initial collateral
@@ -182,10 +188,7 @@ fn close_nonexistent_market_to_deposits_fails() {
         client.close_market_to_deposits(&admin, &999u32);
     }));
 
-    assert!(
-        result.is_err(),
-        "Closing a non-existent market should fail"
-    );
+    assert!(result.is_err(), "Closing a non-existent market should fail");
 }
 
 // ── Issue #574: operation matrix — deposit blocked, withdraw/settle allowed ───
@@ -205,8 +208,7 @@ fn oracle_keypair_for(
     use vatix_market_contract::oracle;
 
     let signing_key = SigningKey::generate(&mut OsRng);
-    let pubkey =
-        soroban_sdk::BytesN::from_array(env, &signing_key.verifying_key().to_bytes());
+    let pubkey = soroban_sdk::BytesN::from_array(env, &signing_key.verifying_key().to_bytes());
     let msg = oracle::construct_oracle_message(env, market_id, outcome);
     let sig = signing_key.sign(msg.to_array().as_slice());
     let sig_bytes = soroban_sdk::BytesN::from_array(env, &sig.to_bytes());
@@ -251,21 +253,24 @@ fn matrix_withdraw_allowed_when_closed() {
 
 /// Matrix row: settle_position is allowed after close + resolve (Issue #574).
 ///
-/// The market is closed to deposits, then resolved with a real oracle
-/// signature, then the user's position is settled. The settlement must
-/// succeed — `closed_to_deposits` must not interfere.
+/// The user opens a position *before* the market closes (closing blocks
+/// opening new exposure — see `matrix_trade_blocked_when_closed`), then the
+/// market is closed to deposits and resolved with a real oracle signature,
+/// then the user's position is settled. The settlement must succeed —
+/// `closed_to_deposits` must not interfere with settling an existing position.
 #[test]
 fn matrix_settle_allowed_when_closed() {
     let (env, admin, contract_id, user, market_id, _collateral_token) =
         setup_market_with_collateral();
     let client = MarketContractClient::new(&env, &contract_id);
 
-    // Step 1: close to deposits.
-    client.close_market_to_deposits(&admin, &market_id);
-
-    // Step 2: give the user YES shares so there's a payout to settle.
+    // Step 1: give the user YES shares (while the market is still open) so
+    // there's a payout to settle.
     let shares = 50 * STROOPS_PER_USDC;
     client.update_position(&user, &market_id, &shares, &0i128, &5_000i128);
+
+    // Step 2: close to deposits.
+    client.close_market_to_deposits(&admin, &market_id);
 
     // Step 3: resolve with a real oracle signature.
     let outcome = true;
@@ -282,7 +287,14 @@ fn matrix_settle_allowed_when_closed() {
 
     let market_id_str = soroban_sdk::String::from_str(&env, "1");
     let resolver = Address::generate(&env);
-    client.resolve_market(&resolver, &market_id_str, &outcome, &oracle_sig);
+    let expires_at = env.ledger().timestamp() + 3_600;
+    client.resolve_market(
+        &resolver,
+        &market_id_str,
+        &outcome,
+        &oracle_sig,
+        &expires_at,
+    );
     assert_event_emitted(&env, "market_resolved");
 
     // Step 4: settle — must succeed even though the market was closed to deposits.
@@ -290,16 +302,46 @@ fn matrix_settle_allowed_when_closed() {
     assert_event_emitted(&env, "position_settled");
 }
 
-/// Matrix row: update_position (trade) is still allowed after close (Issue #574).
+/// Matrix row: update_position that *increases* locked collateral is
+/// blocked once the market is closed to deposits (Issue #703).
+///
+/// This is the exact gap #703 closes: closing a market to deposits must
+/// block opening new exposure through the trading path, not just the
+/// dedicated `deposit_collateral` entrypoint. Even though the user has
+/// plenty of already-deposited collateral to cover the trade, opening new
+/// exposure via `update_position` after close must still be rejected.
 #[test]
-fn matrix_trade_allowed_when_closed() {
+fn matrix_trade_blocked_when_closed_increases_lock() {
     let (env, admin, contract_id, user, market_id, _token) = setup_market_with_collateral();
     let client = MarketContractClient::new(&env, &contract_id);
 
     client.close_market_to_deposits(&admin, &market_id);
 
-    // User has 100 USDC deposited from setup; buying YES shares must work.
+    // User has 100 USDC deposited from setup — plenty to cover this trade —
+    // but buying new YES shares must still be rejected once closed.
+    let shares = 50 * STROOPS_PER_USDC;
+    let result = client.try_update_position(&user, &market_id, &shares, &0i128, &5_000i128);
+    assert!(
+        result.is_err(),
+        "update_position must block new exposure once the market is closed to deposits (#703)"
+    );
+}
+
+/// Matrix row: update_position that reduces or holds locked collateral flat
+/// remains allowed after close (Issue #703) — closing out risk is never
+/// blocked, only opening new exposure is.
+#[test]
+fn matrix_trade_allowed_when_closed_reduces_lock() {
+    let (env, admin, contract_id, user, market_id, _token) = setup_market_with_collateral();
+    let client = MarketContractClient::new(&env, &contract_id);
+
+    // Open a position while the market is still open.
     let shares = 50 * STROOPS_PER_USDC;
     client.update_position(&user, &market_id, &shares, &0i128, &5_000i128);
+
+    client.close_market_to_deposits(&admin, &market_id);
+
+    // Selling half of the YES shares reduces the lock — must still work.
+    client.update_position(&user, &market_id, &(-shares / 2), &0i128, &5_000i128);
     assert_event_emitted(&env, "trade_executed");
 }

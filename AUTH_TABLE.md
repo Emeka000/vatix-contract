@@ -17,7 +17,7 @@ Every row below follows the same two-step pattern unless noted otherwise:
 
 | Entrypoint                     | require_auth | admin-equality check | Notes |
 |---------------------------------|:---:|:---:|-------|
-| `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. |
+| `initialize`                   | ✅ | n/a (bootstraps admin) | Guarded by `AlreadyInitialized` instead. As of #701, also defaults legacy V1 oracle signatures (`OracleV1Disabled`) to disabled — a fresh deployment fails closed until the admin explicitly re-enables V1 via `set_oracle_v1_disabled`. |
 | `propose_admin`                 | — | ✅ (`storage::get_admin`) | Auth deferred to `accept_admin`. |
 | `accept_admin`                  | ✅ | ✅ (must match `PendingAdmin`) | Two-step transfer. |
 | `initialize_market`             | ✅ | ✅ | |
@@ -64,11 +64,15 @@ identity — it is a market-contract-facing entrypoint, not an admin mutator.
 | `set_factory` (propose/execute/cancel) | ✅ | ✅ (`require_admin`) | Updated to use propose/execute/cancel timelock. |
 | `set_market_contract` (propose/execute/cancel) | ✅ | ✅ (`require_admin`) | Updated to use propose/execute/cancel timelock. |
 | `slash_collateral`              | ✅ | ✅ (`require_admin`) |
+| `set_emergency_mode`            | ✅ | ✅ (`require_admin`) | Storage/entrypoint were referenced by `propose`/`challenge`/`finalize`'s emergency-mode guards but the `StorageKey::EmergencyMode` variant and this setter didn't exist — added by the #701 pass alongside the market/resolution fail-closed oracle work. |
 
-`propose`, `challenge`, `appeal`, `finalize`, and `deposit_collateral` all
-`require_auth()` the acting party (proposer/challenger/finalizer) but are
-deliberately open to any caller — the bond, challenge window, and finalize
-conditions are the access control, not an admin check.
+`propose`, `propose_v2`, `challenge`, `appeal`, `finalize`, and
+`deposit_collateral` all `require_auth()` the acting party
+(proposer/challenger/finalizer) but are deliberately open to any caller —
+the bond, challenge window, and finalize conditions are the access control,
+not an admin check. `propose_v2` (#701) is the V2-oracle counterpart of
+`propose`: same access model, verified via the market contract's
+`verify_signature_v2` instead of the legacy `verify_signature`.
 
 ## Conclusion
 

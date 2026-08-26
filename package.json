@@ -5,6 +5,7 @@
     "dev": "pnpm --filter web dev",
     "build:web": "pnpm --filter web build",
     "build:bindings": "tsx scripts/generate-bindings.ts",
+    "env:sync": "tsx scripts/sync-frontend-env.ts",
     "lint:web": "pnpm --filter web lint",
     "issues:generate": "tsx scripts/generate-issues.ts",
     "issues:publish": "tsx scripts/generate-issues.ts --publish",

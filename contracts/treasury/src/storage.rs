@@ -41,6 +41,9 @@ pub enum StorageKey {
     FeeTokens,
     PendingMarketContract,
     PendingAdmin,
+    /// Mirrored emergency mode coordinated with the Market and Resolution
+    /// contracts (#662).
+    EmergencyMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

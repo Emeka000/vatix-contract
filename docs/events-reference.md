@@ -79,10 +79,11 @@ events additionally carry a `version: u32 (topic)` field
 | Event/Topic | Fields (name: type) | Emitted When |
 |---|---|---|
 | `resolution_registered` | `factory: Address (topic)`, `market_contract: Address`, `registered_at: u64` | The Resolution contract is initialized, registering the factory/market relationship |
-| `candidate_proposed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `evidence_uri: String`, `challenge_deadline: u64`, `signature_expiry: u64` | A proposer submits a signed resolution candidate (`propose`) |
+| `candidate_proposed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `evidence_uri: String`, `challenge_deadline: u64`, `signature_expiry: u64` | A proposer submits a signed resolution candidate — via either `propose` (V1) or `propose_v2` (#701; same event, `signature_expiry` doubles as V2's `valid_until`) |
 | `candidate_challenged` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `challenger: Address`, `challenge_uri: String`, `challenged_at: u64` | A challenger disputes a candidate before its challenge deadline |
-| `candidate_finalized` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `finalized_at: u64` | A candidate is finalized after its challenge window closes (`finalize`) |
-| `candidate_appealed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `appeal_round: u32`, `evidence_uri: String`, `challenge_deadline: u64`, `appealed_at: u64` | A challenged candidate is re-proposed/appealed for another round |
+| `candidate_finalized` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `finalized_at: u64` | A candidate is finalized after its challenge window closes (`finalize`) — invokes `resolve_market` or `resolve_market_v2` on the market contract depending on how the candidate was proposed (#701) |
+| `candidate_appealed` | `candidate_id: u32 (topic)`, `market_id: u32 (topic)`, `outcome: bool`, `proposer: Address`, `appeal_round: u32`, `evidence_uri: String`, `challenge_deadline: u64`, `appealed_at: u64` | A challenged candidate is re-proposed/appealed for another round. V1-only (`appeal` rejects a V2-proposed candidate, #701) |
+| `emergency_mode_changed` | `new_mode: EmergencyMode (topic)`, `admin: Address`, `changed_at: u64` | Admin changes the mirrored emergency mode (`set_emergency_mode`), coordinated with the Market and Treasury contracts (#662, wired up for resolution by #701) |
 
 ## Outcome Token (`contracts/outcome-token/src/events.rs`)
 

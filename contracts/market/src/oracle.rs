@@ -31,7 +31,7 @@
 use crate::error::ContractError;
 use crate::types::{AdapterType, Market};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use soroban_sdk::{Bytes, BytesN, Env, Vec};
+use soroban_sdk::{Bytes, BytesN, Env};
 
 /// Domain separator prepended to legacy V1 oracle preimages before hashing.
 pub const ORACLE_DOMAIN_SEPARATOR: &[u8] = b"VATIX_ORACLE_V1";

@@ -61,6 +61,11 @@ pub struct ResolutionCandidate {
     pub market_id: u32,
     pub outcome: bool,
     pub signature: BytesN<64>,
+    /// For a V1 candidate (`propose`): the signature's expiry timestamp.
+    /// For a V2 candidate (`propose_v2`): the oracle message's `valid_until`
+    /// timestamp — same semantics (both are "signature no longer usable
+    /// after this ledger timestamp"), just reused across the two verification
+    /// schemes so the finalize/arbitrate paths don't need a duplicate field.
     pub signature_expiry: u64,
     pub proposer: Address,
     pub evidence_uri: String,
@@ -76,6 +81,15 @@ pub struct ResolutionCandidate {
     /// Bond posted by the proposer (in the market's collateral token),
     /// locked in this contract and refunded to the proposer on finalize.
     pub bond_amount: i128,
+    /// Market resolution epoch/nonce this candidate was signed against.
+    /// Always `0` for a V1 candidate (`propose`); meaningful only when
+    /// `passphrase_hash.is_some()` (#701).
+    pub epoch: u32,
+    /// `Some(..)` marks this candidate as V2-signed (`propose_v2`): finalize
+    /// and arbitration must call the market contract's `resolve_market_v2`
+    /// with this hash instead of the legacy `resolve_market` (#701). `None`
+    /// for a V1 candidate produced by `propose`.
+    pub passphrase_hash: Option<BytesN<32>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

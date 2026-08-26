@@ -113,6 +113,18 @@ scope** for issue #664, which is about the cross-contract orchestration
 layer, not new per-contract storage-versioning code — see the `note` field
 on each contract's entry in `version-matrix.json`.
 
+**#701 note:** `ResolutionCandidate` gained two fields (`epoch: u32`,
+`passphrase_hash: Option<BytesN<32>>`) to support the new `propose_v2`
+entrypoint (V2 oracle verification, binding network passphrase + epoch —
+see `docs/adr-001-oracle-adapter.md` and `contracts/market/src/oracle.rs`
+for the V1/V2 message formats). Since Resolution has no dual-read
+migration path (`versioningScheme: "wasmHashOnly"` above), this is only
+safe under the fresh-deployment model — there must be no live
+`ResolutionCandidate` records serialized under the old (pre-#701) shape
+when this upgrade ships. Confirm `deployments/testnet.json`'s
+`contracts.resolution.contractId` is either unset or freshly redeployed
+before rolling this out.
+
 **Updating the matrix:** whenever you bump `STORAGE_VERSION` on market or
 treasury, add the new value to `version-matrix.json`'s `contracts.<name>`
 entry and append a row to `compatibility` describing which

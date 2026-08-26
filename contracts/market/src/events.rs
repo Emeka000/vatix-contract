@@ -92,7 +92,6 @@ pub fn emit_emergency_pause_toggled(env: &Env, paused: bool) {
     .publish(env);
 }
 
-
 /// Event emitted when the coordinated emergency mode is changed (Issue #662).
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -106,7 +105,11 @@ pub struct EmergencyModeChanged {
 }
 
 /// Emit event when the emergency mode changes.
-pub fn emit_emergency_mode_changed(env: &Env, new_mode: &crate::types::EmergencyMode, admin: &Address) {
+pub fn emit_emergency_mode_changed(
+    env: &Env,
+    new_mode: &crate::types::EmergencyMode,
+    admin: &Address,
+) {
     EmergencyModeChanged {
         version: EVENT_VERSION,
         new_mode: new_mode.clone(),
@@ -115,7 +118,6 @@ pub fn emit_emergency_mode_changed(env: &Env, new_mode: &crate::types::Emergency
     }
     .publish(env);
 }
-
 
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -259,7 +261,13 @@ pub fn emit_collateral_withdrawn(
 /// * market_id - Market identifier
 /// * amount - Amount withdrawn in stroops
 /// * timestamp - Ledger timestamp of the withdrawal
-pub fn emit_large_withdraw(env: &Env, user: &Address, market_id: u32, amount: i128, timestamp: u64) {
+pub fn emit_large_withdraw(
+    env: &Env,
+    user: &Address,
+    market_id: u32,
+    amount: i128,
+    timestamp: u64,
+) {
     LargeWithdraw {
         version: EVENT_VERSION,
         user: user.clone(),
@@ -334,12 +342,7 @@ pub struct MarketClosedToDeposits {
 /// ```ignore
 /// emit_market_closed_to_deposits(&env, 1, &admin, env.ledger().timestamp());
 /// ```
-pub fn emit_market_closed_to_deposits(
-    env: &Env,
-    market_id: u32,
-    admin: &Address,
-    closed_at: u64,
-) {
+pub fn emit_market_closed_to_deposits(env: &Env, market_id: u32, admin: &Address, closed_at: u64) {
     MarketClosedToDeposits {
         version: EVENT_VERSION,
         market_id,
@@ -1162,7 +1165,8 @@ pub fn emit_treasury_proposed(env: &Env, treasury: &Address, effective_at: u64) 
         version: EVENT_VERSION,
         treasury: treasury.clone(),
         effective_at,
-    }.publish(env);
+    }
+    .publish(env);
 }
 
 #[contractevent]
@@ -1179,7 +1183,8 @@ pub fn emit_outcome_token_proposed(env: &Env, outcome_token: &Address, effective
         version: EVENT_VERSION,
         outcome_token: outcome_token.clone(),
         effective_at,
-    }.publish(env);
+    }
+    .publish(env);
 }
 
 #[contractevent]
@@ -1196,7 +1201,8 @@ pub fn emit_outcome_token_set(env: &Env, outcome_token: &Address) {
         version: EVENT_VERSION,
         outcome_token: outcome_token.clone(),
         set_at: env.ledger().timestamp(),
-    }.publish(env);
+    }
+    .publish(env);
 }
 
 #[contractevent]
@@ -1213,7 +1219,8 @@ pub fn emit_resolution_proposed(env: &Env, resolution: &Address, effective_at: u
         version: EVENT_VERSION,
         resolution: resolution.clone(),
         effective_at,
-    }.publish(env);
+    }
+    .publish(env);
 }
 
 #[contractevent]
@@ -1230,7 +1237,8 @@ pub fn emit_resolution_set(env: &Env, resolution: &Address) {
         version: EVENT_VERSION,
         resolution: resolution.clone(),
         set_at: env.ledger().timestamp(),
-    }.publish(env);
+    }
+    .publish(env);
 }
 
 #[contractevent]
@@ -1258,7 +1266,79 @@ pub fn emit_market_oracle_proposed(
         old_oracle_pubkey: old_oracle_pubkey.clone(),
         new_oracle_pubkey: new_oracle_pubkey.clone(),
         effective_at,
-    }.publish(env);
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PositionTokenMismatchDetected {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub user: Address,
+    pub yes_shares: i128,
+    pub no_shares: i128,
+    pub yes_token_balance: i128,
+    pub no_token_balance: i128,
+}
+
+pub fn emit_position_token_mismatch_detected(
+    env: &Env,
+    market_id: u32,
+    user: &Address,
+    yes_shares: i128,
+    no_shares: i128,
+    yes_token_balance: i128,
+    no_token_balance: i128,
+) {
+    PositionTokenMismatchDetected {
+        version: EVENT_VERSION,
+        market_id,
+        user: user.clone(),
+        yes_shares,
+        no_shares,
+        yes_token_balance,
+        no_token_balance,
+    }
+    .publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PositionTokensReconciled {
+    #[topic]
+    pub version: u32,
+    #[topic]
+    pub market_id: u32,
+    #[topic]
+    pub user: Address,
+    pub admin: Address,
+    pub yes_delta_applied: i128,
+    pub no_delta_applied: i128,
+    pub reconciled_at: u64,
+}
+
+pub fn emit_position_tokens_reconciled(
+    env: &Env,
+    market_id: u32,
+    user: &Address,
+    admin: &Address,
+    yes_delta_applied: i128,
+    no_delta_applied: i128,
+) {
+    PositionTokensReconciled {
+        version: EVENT_VERSION,
+        market_id,
+        user: user.clone(),
+        admin: admin.clone(),
+        yes_delta_applied,
+        no_delta_applied,
+        reconciled_at: env.ledger().timestamp(),
+    }
+    .publish(env);
 }
 
 #[cfg(test)]
@@ -1370,7 +1450,14 @@ mod tests {
         let resolved_at = 1234567890u64;
 
         env.as_contract(&contract_id, || {
-            emit_market_resolved(&env, market_id, &oracle_pubkey, &resolver, outcome, resolved_at);
+            emit_market_resolved(
+                &env,
+                market_id,
+                &oracle_pubkey,
+                &resolver,
+                outcome,
+                resolved_at,
+            );
         });
 
         let events = env.events().all();

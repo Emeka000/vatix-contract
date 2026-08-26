@@ -78,100 +78,100 @@ mod test {
 
     // Rest of tests remain the same...
     // ========== Initialize Function Tests ==========
-    
+
     #[test]
     fn test_initialize_with_valid_admin() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let contract_id = env.register(MarketContract, ());
         let client = MarketContractClient::new(&env, &contract_id);
-        
+
         let admin = Address::generate(&env);
-        
+
         // Initialize should succeed with a valid account address
         let result = client.initialize(&admin);
         assert!(result.is_ok());
-        
+
         // Verify admin was set
         let stored_admin = env.as_contract(&contract_id, || {
             storage::get_admin(&env).expect("Admin should be set")
         });
         assert_eq!(stored_admin, admin);
     }
-    
+
     #[test]
     #[should_panic(expected = "Error(Contract, #35)")]
     fn test_initialize_with_contract_address_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let contract_id = env.register(MarketContract, ());
         let client = MarketContractClient::new(&env, &contract_id);
-        
+
         // Try to use another contract address as admin (should fail)
         let other_contract = env.register(MarketContract, ());
-        
+
         // This should fail with InvalidAdmin error (#35)
         client.initialize(&other_contract);
     }
-    
+
     #[test]
     #[should_panic(expected = "Error(Contract, #42)")]
     fn test_initialize_twice_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let contract_id = env.register(MarketContract, ());
         let client = MarketContractClient::new(&env, &contract_id);
-        
+
         let admin = Address::generate(&env);
-        
+
         // First initialization should succeed
         client.initialize(&admin);
-        
+
         // Second initialization should fail with AlreadyInitialized (#42)
         let another_admin = Address::generate(&env);
         client.initialize(&another_admin);
     }
-    
+
     #[test]
     fn test_initialize_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let contract_id = env.register(MarketContract, ());
         let client = MarketContractClient::new(&env, &contract_id);
-        
+
         let admin = Address::generate(&env);
-        
+
         client.initialize(&admin);
-        
+
         // Verify event was emitted
         let events = env.events().all();
         assert!(events.len() > 0);
-        
+
         // Check for contract_initialized_event
         let event_found = events.iter().any(|e| {
-            e.topics.iter().any(|t| {
-                t.to_string().contains("contract_initialized")
-            })
+            e.topics
+                .iter()
+                .any(|t| t.to_string().contains("contract_initialized"))
         });
         assert!(event_found, "contract_initialized_event should be emitted");
     }
-    
+
     #[test]
     fn test_initialize_sets_version() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let contract_id = env.register(MarketContract, ());
         let client = MarketContractClient::new(&env, &contract_id);
-        
+
         let admin = Address::generate(&env);
-        
+
         client.initialize(&admin);
-        
+
         // Verify storage version was set
         env.as_contract(&contract_id, || {
             let result = storage::assert_version(&env);
@@ -180,7 +180,7 @@ mod test {
     }
 
     // ========== Initialize Market Function Tests ==========
-    
+
     #[test]
     fn test_initialize_market_success() {
         let (env, admin, client, contract_id) = create_test_contract();
@@ -416,8 +416,14 @@ mod test {
         let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
         let usdc_token = Address::generate(&env);
 
-        let market_id =
-            client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &usdc_token, &None);
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &usdc_token,
+            &None,
+        );
 
         let market = get_market_from_storage(&env, &contract_id, market_id);
         assert_eq!(market.collateral_token, usdc_token);
@@ -546,7 +552,13 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
 
-        client.resolve_market(&resolver, &non_existent_market_id, &outcome, &invalid_signature, &0u64);
+        client.resolve_market(
+            &resolver,
+            &non_existent_market_id,
+            &outcome,
+            &invalid_signature,
+            &0u64,
+        );
     }
 
     #[test]
@@ -582,7 +594,13 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
+        client.resolve_market(
+            &resolver,
+            &market_id_str,
+            &outcome,
+            &invalid_signature,
+            &0u64,
+        );
     }
 
     #[test]
@@ -611,7 +629,13 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::random(&env);
         let market_id_str = String::from_str(&env, "1");
-        client.resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
+        client.resolve_market(
+            &resolver,
+            &market_id_str,
+            &outcome,
+            &invalid_signature,
+            &0u64,
+        );
     }
 
     #[test]
@@ -636,7 +660,13 @@ mod test {
         let outcome = true;
         let invalid_signature = BytesN::random(&env);
         let market_id_str = String::from_str(&env, "1");
-        let result = client.try_resolve_market(&resolver, &market_id_str, &outcome, &invalid_signature, &0u64);
+        let result = client.try_resolve_market(
+            &resolver,
+            &market_id_str,
+            &outcome,
+            &invalid_signature,
+            &0u64,
+        );
 
         assert_eq!(
             result,
@@ -688,6 +718,260 @@ mod test {
         assert_eq!(market_after.status, MarketStatus::Resolved);
         assert_eq!(market_after.result, Some(outcome));
         assert_eq!(market_after.resolver, Some(resolver));
+    }
+
+    // ── Issue #701: fail closed without V1; expires_at==0 no longer disables expiry ──
+
+    /// A fresh `initialize()` must default legacy V1 oracle signatures to
+    /// disabled (#701) — unlike `create_test_contract()`'s raw storage
+    /// pokes, this calls the real entrypoint so the new default is actually
+    /// exercised.
+    #[test]
+    fn test_initialize_defaults_oracle_v1_disabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        client.initialize(&admin);
+
+        assert!(
+            client.is_oracle_v1_disabled(),
+            "fresh initialize() must default V1 oracle signatures to disabled"
+        );
+    }
+
+    /// `resolve_market` must reject `expires_at == 0` outright instead of
+    /// treating it as "no expiry" (#701) — the old fail-open sentinel let a
+    /// resolver bypass the expiry check entirely by passing zero.
+    #[test]
+    fn test_resolve_market_rejects_zero_expires_at() {
+        let (env, admin, client, _contract_id) = create_test_contract();
+        // V1 is enabled by default in this raw-storage test fixture (it
+        // bypasses `initialize()`), so only the expiry gate is under test.
+
+        let question = String::from_str(&env, "Zero expiry test");
+        let end_time = env.ledger().timestamp() + 86400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+        let collateral_token = Address::generate(&env);
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let result =
+            client.try_resolve_market(&resolver, &market_id_str, &outcome, &signature, &0u64);
+        assert!(
+            result.is_err(),
+            "expires_at == 0 must be rejected as expired, not treated as no-expiry"
+        );
+    }
+
+    /// Once V1 is disabled, `resolve_market` must reject a V1-style
+    /// signature with `UnauthorizedOracle` (#701) — the guard that already
+    /// existed for `resolve_market` is re-verified here alongside the new
+    /// default, and mirrored below for the read-only `verify_signature`.
+    #[test]
+    fn test_resolve_market_rejects_when_v1_disabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin); // defaults V1 disabled
+
+        let question = String::from_str(&env, "V1 disabled test");
+        let end_time = env.ledger().timestamp() + 86400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+        let collateral_token = Address::generate(&env);
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let expires_at = env.ledger().timestamp() + 3_600;
+        let result =
+            client.try_resolve_market(&resolver, &market_id_str, &outcome, &signature, &expires_at);
+        assert!(
+            result.is_err(),
+            "resolve_market must fail closed once V1 is disabled"
+        );
+    }
+
+    /// `verify_signature` (the read-only dispatch the resolution contract's
+    /// `propose()` calls cross-contract) must also fail closed once V1 is
+    /// disabled (#701) — otherwise resolution could open a challenge window
+    /// for a candidate `resolve_market` can never finalize.
+    #[test]
+    fn test_verify_signature_rejects_when_v1_disabled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin); // defaults V1 disabled
+
+        let question = String::from_str(&env, "verify_signature V1 disabled test");
+        let end_time = env.ledger().timestamp() + 86400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+        let collateral_token = Address::generate(&env);
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+
+        let result = client.try_verify_signature(&market_id, &outcome, &signature);
+        assert!(
+            result.is_err(),
+            "verify_signature must fail closed once V1 is disabled"
+        );
+
+        // Re-enabling V1 restores the old behavior for a genuine migration window.
+        client.set_oracle_v1_disabled(&admin, &false);
+        let result = client.try_verify_signature(&market_id, &outcome, &signature);
+        assert!(
+            result.is_ok(),
+            "verify_signature must succeed again once V1 is explicitly re-enabled"
+        );
+    }
+
+    // ── Issue #702: pause must cover the full state-mutating entrypoint matrix ──
+
+    /// Exercises every state-mutating entrypoint while the contract is
+    /// paused and asserts each one is rejected with `ContractPaused` (#702).
+    /// This is the "full mutator matrix" the issue calls for: a single test
+    /// that fails immediately if any mutator is ever added — or reverts to
+    /// missing — the `require_not_paused` guard.
+    ///
+    /// Deliberately excluded (by design, not oversight): `initialize` (no
+    /// pause state exists yet), `pause`/`unpause` themselves, `set_emergency_mode`
+    /// (a separate, independent emergency lever that must stay reachable
+    /// even while paused), and `propose_admin`/`accept_admin`/
+    /// `cancel_admin_transfer` (admin-key rotation must remain possible
+    /// during an emergency pause so a compromised admin can be replaced).
+    #[test]
+    fn test_pause_blocks_full_mutator_matrix() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(MarketContract, ());
+        let client = MarketContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let question = String::from_str(&env, "Pause matrix test");
+        let end_time = env.ledger().timestamp() + 86_400;
+        let market_id = 1u32;
+        let outcome = true;
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, market_id, outcome);
+        let collateral_token = Address::generate(&env);
+        client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
+
+        let user = Address::generate(&env);
+        let resolver = Address::generate(&env);
+        let market_id_str = String::from_str(&env, "1");
+        let expires_at = env.ledger().timestamp() + 3_600;
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        let paused = crate::error::ContractError::ContractPaused;
+        macro_rules! assert_paused {
+            ($call:expr) => {
+                assert_eq!($call.unwrap_err().unwrap(), paused);
+            };
+        }
+
+        assert_paused!(client.try_deposit_collateral(&user, &market_id, &1_000i128));
+        assert_paused!(client.try_withdraw_unused_collateral(&user, &market_id, &1_000i128));
+        assert_paused!(client.try_update_position(&user, &market_id, &1i128, &0i128, &5_000i128));
+        assert_paused!(client.try_resolve_market(
+            &resolver,
+            &market_id_str,
+            &outcome,
+            &signature,
+            &expires_at
+        ));
+        assert_paused!(client.try_cancel_market(&admin, &market_id));
+        assert_paused!(client.try_withdraw_canceled_collateral(&user, &market_id));
+        assert_paused!(client.try_settle_position(&user, &market_id));
+        assert_paused!(
+            client.try_batch_settle_positions(&market_id, &soroban_sdk::vec![&env, user.clone()])
+        );
+        assert_paused!(client.try_settle_positions_page(&market_id, &0u32, &10u32));
+        assert_paused!(client.try_close_market_to_deposits(&admin, &market_id));
+        assert_paused!(client.try_reconcile_position_tokens(&admin, &market_id, &user));
+        assert_paused!(client.try_propose_treasury_contract(&admin, &Address::generate(&env)));
+        assert_paused!(client.try_execute_treasury_contract());
+        assert_paused!(client.try_cancel_treasury_contract(&admin));
+        assert_paused!(client.try_set_fee_rate(&admin, &100i128));
+        assert_paused!(client.try_execute_fee_rate_change());
+        assert_paused!(client.try_set_fee_cap(&admin, &500i128));
+        assert_paused!(client.try_add_fee_waiver(&admin, &user));
+        assert_paused!(client.try_remove_fee_waiver(&admin, &user));
+        assert_paused!(client.try_propose_market_oracle(
+            &admin,
+            &market_id,
+            &BytesN::from_array(&env, &[2u8; 32])
+        ));
+        assert_paused!(client.try_execute_market_oracle(&market_id));
+        assert_paused!(client.try_cancel_market_oracle(&admin, &market_id));
+        let signers = soroban_sdk::vec![&env, BytesN::from_array(&env, &[3u8; 32])];
+        assert_paused!(client.try_propose_threshold_signers(&admin, &signers, &1u32));
+        assert_paused!(client.try_execute_threshold_signers());
+        assert_paused!(client.try_cancel_threshold_signers(&admin));
+        assert_paused!(client.try_set_market_threshold_signers(&admin, &market_id, &signers, &1u32));
+        assert_paused!(client.try_set_threshold_signers(&admin, &signers, &1u32));
+        assert_paused!(client.try_propose_outcome_token_contract(&admin, &Address::generate(&env)));
+        assert_paused!(client.try_execute_outcome_token_contract());
+        assert_paused!(client.try_cancel_outcome_token_contract(&admin));
+        assert_paused!(client.try_propose_resolution_contract(&admin, &Address::generate(&env)));
+        assert_paused!(client.try_execute_resolution_contract());
+        assert_paused!(client.try_cancel_resolution_contract(&admin));
+        assert_paused!(client.try_set_oracle_v1_disabled(&admin, &true));
+        assert_paused!(client.try_set_adapter_enabled(
+            &admin,
+            &crate::types::AdapterType::Reflector,
+            &true
+        ));
+        assert_paused!(client.try_reopen_market(&admin, &market_id));
+
+        // Deliberately-exempt mutators must still work while paused.
+        client.set_emergency_mode(&admin, &crate::types::EmergencyMode::Normal);
+
+        // Unpause restores normal operation for a representative mutator.
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+        client.set_fee_cap(&admin, &500i128);
     }
 
     #[test]
@@ -928,13 +1212,8 @@ mod test {
 
         let resolver = Address::generate(&env);
         let market_id_str = String::from_str(&env, "1");
-        let _ = client.try_resolve_market(
-            &resolver,
-            &market_id_str,
-            &outcome,
-            &signature,
-            &expires_at,
-        );
+        let _ =
+            client.try_resolve_market(&resolver, &market_id_str, &outcome, &signature, &expires_at);
 
         let market = get_market_from_storage(&env, &contract_id, market_id);
         assert_eq!(market.status, crate::types::MarketStatus::Active);
@@ -1088,7 +1367,9 @@ mod test {
 
         // The persisted position matches the returned one
         let stored = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).expect("version check ok").expect("position should exist")
+            storage::get_position(&env, market_id, &user)
+                .expect("version check ok")
+                .expect("position should exist")
         });
         assert_eq!(stored.yes_shares, yes);
         assert_eq!(stored.locked_collateral, 60 * STROOPS_PER_USDC);
@@ -1155,7 +1436,10 @@ mod test {
 
         // Advance the ledger past the market end_time.
         let end_time = env.as_contract(&contract_id, || {
-            storage::get_market(&env, market_id).unwrap().unwrap().end_time
+            storage::get_market(&env, market_id)
+                .unwrap()
+                .unwrap()
+                .end_time
         });
         env.ledger().set_timestamp(end_time + 1);
 
@@ -1383,15 +1667,15 @@ mod test {
         let events = env.events().all();
         assert!(events.len() > 0);
     }
-    
+
     #[test]
     #[should_panic(expected = "Error(Contract, #35)")]
     fn test_propose_admin_with_contract_address_fails() {
         let (env, admin, client, _contract_id) = create_test_contract();
-        
+
         // Try to propose a contract address as admin
         let contract_admin = env.register(MarketContract, ());
-        
+
         // This should fail with InvalidAdmin error (#35)
         client.propose_admin(&admin, &contract_admin);
     }
@@ -1440,8 +1724,14 @@ mod test {
         let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
         let collateral_token = Address::generate(&env);
 
-        let market_id =
-            client.initialize_market(&new_admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
+        let market_id = client.initialize_market(
+            &new_admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
         assert_eq!(market_id, 1);
     }
 
@@ -1458,8 +1748,14 @@ mod test {
         let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
         let collateral_token = Address::generate(&env);
 
-        let result =
-            client.try_initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
+        let result = client.try_initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
         assert!(result.is_err());
     }
 
@@ -1616,7 +1912,10 @@ mod test {
         client.set_outcome_token_contract(&admin, &outcome_token_contract);
 
         env.as_contract(&contract_id, || {
-            assert_eq!(storage::get_outcome_token_contract(&env).unwrap(), outcome_token_contract);
+            assert_eq!(
+                storage::get_outcome_token_contract(&env).unwrap(),
+                outcome_token_contract
+            );
         });
     }
 
@@ -1628,7 +1927,10 @@ mod test {
         client.set_resolution_contract(&admin, &resolution_contract);
 
         env.as_contract(&contract_id, || {
-            assert_eq!(storage::get_resolution_contract(&env).unwrap(), resolution_contract);
+            assert_eq!(
+                storage::get_resolution_contract(&env).unwrap(),
+                resolution_contract
+            );
         });
     }
 
@@ -1640,9 +1942,18 @@ mod test {
         let stranger = Address::generate(&env);
         let address = Address::generate(&env);
 
-        assert_eq!(client.try_set_treasury_contract(&stranger, &address), Err(Ok(ContractError::NotAdmin)));
-        assert_eq!(client.try_set_outcome_token_contract(&stranger, &address), Err(Ok(ContractError::NotAdmin)));
-        assert_eq!(client.try_set_resolution_contract(&stranger, &address), Err(Ok(ContractError::NotAdmin)));
+        assert_eq!(
+            client.try_set_treasury_contract(&stranger, &address),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_outcome_token_contract(&stranger, &address),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_set_resolution_contract(&stranger, &address),
+            Err(Ok(ContractError::NotAdmin))
+        );
     }
 
     #[test]
@@ -1665,11 +1976,21 @@ mod test {
         let question = String::from_str(&env, "Will it rain tomorrow?");
         let end_time = env.ledger().timestamp() + 86400;
         let oracle_pubkey = BytesN::from_array(&env, &[1u8; 32]);
-        let market_id = client.initialize_market(&admin, &question, &end_time, &oracle_pubkey, &collateral_token, &None);
+        let market_id = client.initialize_market(
+            &admin,
+            &question,
+            &end_time,
+            &oracle_pubkey,
+            &collateral_token,
+            &None,
+        );
 
         let resolution_addr = env.register(ResolutionContract, ());
-        ResolutionContractClient::new(&env, &resolution_addr)
-            .initialize(&admin, &Address::generate(&env), &contract_id);
+        ResolutionContractClient::new(&env, &resolution_addr).initialize(
+            &admin,
+            &Address::generate(&env),
+            &contract_id,
+        );
 
         client.set_resolution_contract(&admin, &resolution_addr);
 
@@ -1677,8 +1998,15 @@ mod test {
 
         let proposer = Address::generate(&env);
         let evidence = String::from_str(&env, "evidence://uri");
-        ResolutionContractClient::new(&env, &resolution_addr)
-            .propose(&proposer, &market_id, &true, &signature, &(env.ledger().timestamp() + 60), &evidence, &60);
+        ResolutionContractClient::new(&env, &resolution_addr).propose(
+            &proposer,
+            &market_id,
+            &true,
+            &signature,
+            &(env.ledger().timestamp() + 60),
+            &evidence,
+            &60,
+        );
 
         let resolver = Address::generate(&env);
         let market_id_str = String::from_str(&env, &market_id.to_string());
@@ -2012,7 +2340,9 @@ mod test {
         assert_eq!(pos.no_shares, 0);
 
         let stored = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(stored.yes_shares, 50 * STROOPS_PER_USDC);
     }
@@ -2037,7 +2367,9 @@ mod test {
         assert_eq!(pos.no_shares, 40 * STROOPS_PER_USDC);
 
         let stored = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(stored.no_shares, 40 * STROOPS_PER_USDC);
     }
@@ -2079,7 +2411,9 @@ mod test {
         client.deposit_collateral(&user, &market_id, &extra);
 
         let pos = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(pos.locked_collateral, 0);
         assert_eq!(pos.total_deposited, deposit + extra);
@@ -2100,7 +2434,9 @@ mod test {
         client.update_position(&user, &market_id, &shares, &0i128, &5_000i128);
 
         let before = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(before.locked_collateral, 20 * STROOPS_PER_USDC);
         assert_eq!(before.total_deposited, deposit);
@@ -2109,11 +2445,14 @@ mod test {
         let stored_market = env.as_contract(&contract_id, || {
             storage::get_market(&env, market_id).unwrap().unwrap()
         });
-        StellarAssetClient::new(&env, &stored_market.collateral_token).mint(&contract_id, &(100 * STROOPS_PER_USDC));
+        StellarAssetClient::new(&env, &stored_market.collateral_token)
+            .mint(&contract_id, &(100 * STROOPS_PER_USDC));
         client.withdraw_unused_collateral(&user, &market_id, &withdraw_amount);
 
         let after = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(after.total_deposited, deposit - withdraw_amount);
         assert_eq!(after.locked_collateral, before.locked_collateral); // unchanged
@@ -2132,7 +2471,8 @@ mod test {
         client.update_position(&user, &market_id, &shares, &0i128, &6_000i128);
 
         // Try to withdraw 50 USDC (> available 40 USDC) → rejected.
-        let result = client.try_withdraw_unused_collateral(&user, &market_id, &(50 * STROOPS_PER_USDC));
+        let result =
+            client.try_withdraw_unused_collateral(&user, &market_id, &(50 * STROOPS_PER_USDC));
         assert_eq!(result, Err(Ok(ContractError::InsufficientCollateral)));
     }
 
@@ -2162,7 +2502,9 @@ mod test {
 
         // The stored value must also match.
         let stored = env.as_contract(&contract_id, || {
-            storage::get_position(&env, market_id, &user).unwrap().unwrap()
+            storage::get_position(&env, market_id, &user)
+                .unwrap()
+                .unwrap()
         });
         assert_eq!(stored.locked_collateral, expected);
     }
@@ -2174,11 +2516,7 @@ mod test {
     #[test]
     fn test_335_settle_position_emits_position_updated() {
         use crate::positions::STROOPS_PER_USDC;
-        use soroban_sdk::{
-            testutils::Events as _,
-            token::StellarAssetClient,
-            IntoVal, Symbol,
-        };
+        use soroban_sdk::{testutils::Events as _, token::StellarAssetClient, IntoVal, Symbol};
 
         let deposit = 100 * STROOPS_PER_USDC;
         let (env, user, client, contract_id, market_id) = setup_funded_market(deposit);
@@ -2226,9 +2564,18 @@ mod test {
         );
 
         // position_updated must appear before position_settled.
-        let updated_idx = names.iter().position(|s| *s == Symbol::new(&env, "position_updated_event")).unwrap();
-        let settled_idx = names.iter().position(|s| *s == Symbol::new(&env, "position_settled_event")).unwrap();
-        assert!(updated_idx < settled_idx, "position_updated_event must precede position_settled_event");
+        let updated_idx = names
+            .iter()
+            .position(|s| *s == Symbol::new(&env, "position_updated_event"))
+            .unwrap();
+        let settled_idx = names
+            .iter()
+            .position(|s| *s == Symbol::new(&env, "position_settled_event"))
+            .unwrap();
+        assert!(
+            updated_idx < settled_idx,
+            "position_updated_event must precede position_settled_event"
+        );
     }
 
     /// #335: withdraw_canceled_collateral emits a position_updated_event after
@@ -2317,8 +2664,14 @@ mod test {
             setup_admin_market_with_deposit(1_000);
         let stranger = Address::generate(&env);
 
-        assert_eq!(client.try_pause(&stranger), Err(Ok(ContractError::NotAdmin)));
-        assert_eq!(client.try_unpause(&stranger), Err(Ok(ContractError::NotAdmin)));
+        assert_eq!(
+            client.try_pause(&stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
+        assert_eq!(
+            client.try_unpause(&stranger),
+            Err(Ok(ContractError::NotAdmin))
+        );
     }
 
     // ========== Admin auth audit: missing/insufficiently-checked mutators ==========
@@ -2334,11 +2687,13 @@ mod test {
 
         let mut old_rng = OsRng;
         let old_signing_key = SigningKey::generate(&mut old_rng);
-        let old_oracle_pubkey = BytesN::from_array(&env, &old_signing_key.verifying_key().to_bytes());
+        let old_oracle_pubkey =
+            BytesN::from_array(&env, &old_signing_key.verifying_key().to_bytes());
 
         let mut new_rng = OsRng;
         let new_signing_key = SigningKey::generate(&mut new_rng);
-        let new_oracle_pubkey = BytesN::from_array(&env, &new_signing_key.verifying_key().to_bytes());
+        let new_oracle_pubkey =
+            BytesN::from_array(&env, &new_signing_key.verifying_key().to_bytes());
 
         let question = String::from_str(&env, "Rotation invalidates old signatures");
         let end_time = env.ledger().timestamp() + 86_400;
@@ -2352,20 +2707,34 @@ mod test {
         );
 
         let message = crate::oracle::construct_oracle_message(&env, market_id, true);
-        let old_signature = BytesN::from_array(&env, &old_signing_key.sign(message.to_array().as_slice()).to_bytes());
+        let old_signature = BytesN::from_array(
+            &env,
+            &old_signing_key
+                .sign(message.to_array().as_slice())
+                .to_bytes(),
+        );
 
         client.update_market_oracle(&admin, &market_id, &new_oracle_pubkey);
 
         let market_id_str = String::from_str(&env, "1");
-        let old_result = client.try_resolve_market(&resolver, &market_id_str, &true, &old_signature, &0u64);
+        let old_result =
+            client.try_resolve_market(&resolver, &market_id_str, &true, &old_signature, &0u64);
         assert_eq!(old_result, Err(Ok(ContractError::InvalidSignature)));
 
         let message = crate::oracle::construct_oracle_message(&env, market_id, true);
-        let new_signature = BytesN::from_array(&env, &new_signing_key.sign(message.to_array().as_slice()).to_bytes());
-        let new_result = client.try_resolve_market(&resolver, &market_id_str, &true, &new_signature, &0u64);
+        let new_signature = BytesN::from_array(
+            &env,
+            &new_signing_key
+                .sign(message.to_array().as_slice())
+                .to_bytes(),
+        );
+        let new_result =
+            client.try_resolve_market(&resolver, &market_id_str, &true, &new_signature, &0u64);
         assert_eq!(new_result, Ok(Ok(())));
 
-        let market = env.as_contract(&contract_id, || storage::get_market(&env, market_id).unwrap().unwrap());
+        let market = env.as_contract(&contract_id, || {
+            storage::get_market(&env, market_id).unwrap().unwrap()
+        });
         assert_eq!(market.oracle_pubkey, new_oracle_pubkey);
     }
 
@@ -2628,8 +2997,7 @@ mod test {
 
         let question = String::from_str(&env, "Resolution status test market");
         let end_time = env.ledger().timestamp() + 86_400;
-        let (oracle_pubkey, signature) =
-            generate_test_keypair_and_sign(&env, 1, true);
+        let (oracle_pubkey, signature) = generate_test_keypair_and_sign(&env, 1, true);
         let collateral_token = Address::generate(&env);
 
         let market_id = client.initialize_market(
@@ -2707,9 +3075,13 @@ mod test {
 
 #[test]
 fn test_decode_v3_market_blob_fails() {
-    use soroban_sdk::{xdr::{FromXdr, ToXdr}, Env, contracttype, Address, BytesN, String};
-    use crate::types::{MarketStatus, AdapterType, Market};
-    
+    use crate::types::{AdapterType, Market, MarketStatus};
+    use soroban_sdk::{
+        contracttype,
+        xdr::{FromXdr, ToXdr},
+        Address, BytesN, Env, String,
+    };
+
     let env = Env::default();
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2753,5 +3125,8 @@ fn test_decode_v3_market_blob_fails() {
 
     // Attempting to decode as V4 Market should fail because closed_to_deposits is missing
     let decode_result = Market::from_xdr(&env, &v3_xdr);
-    assert!(decode_result.is_err(), "Decoding V3 market as V4 should fail intentionally because it lacks closed_to_deposits");
+    assert!(
+        decode_result.is_err(),
+        "Decoding V3 market as V4 should fail intentionally because it lacks closed_to_deposits"
+    );
 }

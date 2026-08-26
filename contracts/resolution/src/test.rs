@@ -1,6 +1,7 @@
 use crate::{ContractError, ResolutionContract, ResolutionContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, String,
 };
 
@@ -16,13 +17,28 @@ use soroban_sdk::{
 mod mock_market {
     use crate::error::ContractError;
     use crate::types::MarketStatus;
-    use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env};
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String};
 
     #[contracttype]
     #[derive(Clone)]
     enum DataKey {
         Token,
         Status,
+        /// Records the arguments of the most recent successful
+        /// `resolve_market`/`resolve_market_v2` call so tests can assert the
+        /// resolution contract invoked the market with the correct real
+        /// signature (#701), not just that `finalize`/`arbitrate` returned Ok.
+        LastResolved,
+        V1Disabled,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct LastResolvedCall {
+        pub resolver: Address,
+        pub market_id: String,
+        pub outcome: bool,
+        pub is_v2: bool,
     }
 
     #[contract]
@@ -31,7 +47,9 @@ mod mock_market {
     #[contractimpl]
     impl MockMarket {
         pub fn init(env: Env, collateral_token: Address) {
-            env.storage().instance().set(&DataKey::Token, &collateral_token);
+            env.storage()
+                .instance()
+                .set(&DataKey::Token, &collateral_token);
             env.storage()
                 .instance()
                 .set(&DataKey::Status, &MarketStatus::Active);
@@ -42,11 +60,39 @@ mod mock_market {
         }
 
         /// Accepts any signature except the reserved all-zero one, which
-        /// tests use to simulate an oracle rejection.
+        /// tests use to simulate an oracle rejection. Mirrors the real
+        /// market contract's V1 fail-closed gate (#701): rejects outright
+        /// once V1 has been "disabled" via `set_v1_disabled`.
         pub fn verify_signature(
             env: Env,
             _market_id: u32,
             _outcome: bool,
+            signature: BytesN<64>,
+        ) -> Result<(), ContractError> {
+            if env
+                .storage()
+                .instance()
+                .get(&DataKey::V1Disabled)
+                .unwrap_or(false)
+            {
+                return Err(ContractError::Unauthorized);
+            }
+            if signature == BytesN::from_array(&env, &[0u8; 64]) {
+                return Err(ContractError::Unauthorized);
+            }
+            Ok(())
+        }
+
+        /// V2 counterpart of `verify_signature`. Same all-zero-signature
+        /// rejection convention as V1.
+        #[allow(clippy::too_many_arguments)]
+        pub fn verify_signature_v2(
+            env: Env,
+            _passphrase_hash: BytesN<32>,
+            _market_id: u32,
+            _outcome: bool,
+            _valid_until: u64,
+            _epoch: u32,
             signature: BytesN<64>,
         ) -> Result<(), ContractError> {
             if signature == BytesN::from_array(&env, &[0u8; 64]) {
@@ -59,7 +105,52 @@ mod mock_market {
             env.storage().instance().get(&DataKey::Status).unwrap()
         }
 
-        pub fn resolve_market(_env: Env, _market_id: u32, _outcome: bool, _signature: BytesN<64>) {}
+        /// Real signature: `(resolver, market_id: String, outcome, signature, expires_at)`.
+        pub fn resolve_market(
+            env: Env,
+            resolver: Address,
+            market_id: String,
+            outcome: bool,
+            _signature: BytesN<64>,
+            _expires_at: u64,
+        ) {
+            env.storage().instance().set(
+                &DataKey::LastResolved,
+                &LastResolvedCall {
+                    resolver,
+                    market_id,
+                    outcome,
+                    is_v2: false,
+                },
+            );
+        }
+
+        /// Real signature: `(resolver, market_id: String, outcome, valid_until, epoch, signature, passphrase_hash)`.
+        #[allow(clippy::too_many_arguments)]
+        pub fn resolve_market_v2(
+            env: Env,
+            resolver: Address,
+            market_id: String,
+            outcome: bool,
+            _valid_until: u64,
+            _epoch: u32,
+            _signature: BytesN<64>,
+            _passphrase_hash: BytesN<32>,
+        ) {
+            env.storage().instance().set(
+                &DataKey::LastResolved,
+                &LastResolvedCall {
+                    resolver,
+                    market_id,
+                    outcome,
+                    is_v2: true,
+                },
+            );
+        }
+
+        pub fn get_last_resolved(env: Env) -> Option<LastResolvedCall> {
+            env.storage().instance().get(&DataKey::LastResolved)
+        }
 
         pub fn void_market(env: Env, _caller: Address, _market_id: u32) {
             env.storage()
@@ -69,6 +160,14 @@ mod mock_market {
 
         pub fn set_status(env: Env, status: MarketStatus) {
             env.storage().instance().set(&DataKey::Status, &status);
+        }
+
+        /// Test hook: simulate the real market contract's V1 signatures
+        /// being disabled (#701).
+        pub fn set_v1_disabled(env: Env, disabled: bool) {
+            env.storage()
+                .instance()
+                .set(&DataKey::V1Disabled, &disabled);
         }
     }
 }
@@ -85,7 +184,9 @@ fn setup(env: &Env) -> (ResolutionContractClient<'_>, Address, Address, Address)
     let factory = Address::generate(env);
 
     let token_admin = Address::generate(env);
-    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
 
     let market_contract = env.register(MockMarket, ());
     MockMarketClient::new(env, &market_contract).init(&token);
@@ -213,7 +314,17 @@ fn challenge_after_deadline_is_rejected() {
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
-    let candidate_id = client.propose(&proposer, &1, &true, &signature(&env), &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
+    fund(&env, &token, &proposer, 10_000_000i128);
+    let candidate_id = client.propose(
+        &proposer,
+        &1,
+        &true,
+        &signature(&env),
+        &(env.ledger().timestamp() + 60),
+        &evidence(&env),
+        &60,
+        &10_000_000i128,
+    );
 
     set_time(&env, 1_061);
     let challenger = Address::generate(&env);
@@ -233,10 +344,10 @@ fn admin_can_update_factory_registration() {
     set_time(&env, 100);
     let new_factory = Address::generate(&env);
     client.propose_factory(&admin, &new_factory);
-    
+
     set_time(&env, 100 + 172_800);
     client.execute_factory();
-    
+
     assert_eq!(client.get_config().factory, new_factory);
 }
 
@@ -253,7 +364,16 @@ fn finalize_calls_resolve_market_on_market_contract() {
     let proposer = Address::generate(&env);
     fund(&env, &token, &proposer, 10_000_000i128);
     let sig = signature(&env);
-    let candidate_id = client.propose(&proposer, &5, &true, &sig, &(env.ledger().timestamp() + 60), &evidence(&env), &60, &10_000_000i128);
+    let candidate_id = client.propose(
+        &proposer,
+        &5,
+        &true,
+        &sig,
+        &(env.ledger().timestamp() + 7_200),
+        &evidence(&env),
+        &60,
+        &10_000_000i128,
+    );
 
     set_time(&env, 1_061);
     let finalizer = Address::generate(&env);
@@ -395,10 +515,20 @@ fn propose_accepts_challenge_window_at_min() {
     fund(&env, &token, &proposer, BOND);
     let expiry = env.ledger().timestamp() + MIN_WINDOW + 3600;
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &MIN_WINDOW, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
     );
-    assert!(result.is_ok(), "MIN window should be accepted, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "MIN window should be accepted, got: {:?}",
+        result
+    );
 }
 
 /// challenge_window == MAX (14 days) is accepted.
@@ -412,10 +542,20 @@ fn propose_accepts_challenge_window_at_max() {
     fund(&env, &token, &proposer, BOND);
     let expiry = env.ledger().timestamp() + MAX_WINDOW + 3600;
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &MAX_WINDOW, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MAX_WINDOW,
+        &BOND,
     );
-    assert!(result.is_ok(), "MAX window should be accepted, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "MAX window should be accepted, got: {:?}",
+        result
+    );
 }
 
 /// challenge_window == MIN - 1 (59 s) is rejected with InvalidChallengeWindow.
@@ -429,8 +569,14 @@ fn propose_rejects_challenge_window_below_min() {
     fund(&env, &token, &proposer, BOND);
     let expiry = env.ledger().timestamp() + 3600;
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &(MIN_WINDOW - 1), &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &(MIN_WINDOW - 1),
+        &BOND,
     );
     assert_eq!(result, Err(Ok(ContractError::InvalidChallengeWindow)));
 }
@@ -446,8 +592,14 @@ fn propose_rejects_challenge_window_above_max() {
     fund(&env, &token, &proposer, BOND);
     let expiry = env.ledger().timestamp() + MAX_WINDOW + 3600;
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &(MAX_WINDOW + 1), &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &(MAX_WINDOW + 1),
+        &BOND,
     );
     assert_eq!(result, Err(Ok(ContractError::InvalidChallengeWindow)));
 }
@@ -470,10 +622,20 @@ fn propose_accepts_signature_expiry_equal_to_proposed_at() {
     // expiry == ledger timestamp at call time
     let expiry = env.ledger().timestamp();
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &MIN_WINDOW, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
     );
-    assert!(result.is_ok(), "expiry == proposed_at should be accepted, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "expiry == proposed_at should be accepted, got: {:?}",
+        result
+    );
 }
 
 /// signature_expiry < proposed_at is rejected with InvalidSignatureExpiry.
@@ -488,8 +650,14 @@ fn propose_rejects_signature_expiry_before_proposed_at() {
     // expiry is one second before ledger time
     let expiry = env.ledger().timestamp() - 1;
     let result = client.try_propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &MIN_WINDOW, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &MIN_WINDOW,
+        &BOND,
     );
     assert_eq!(result, Err(Ok(ContractError::InvalidSignatureExpiry)));
 }
@@ -519,9 +687,14 @@ fn challenge_accepted_at_exactly_deadline() {
     fund(&env, &token, &proposer, BOND);
     let window = 300u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
         &(env.ledger().timestamp() + window + 3600),
-        &evidence(&env), &window, &BOND,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
     // challenge_deadline == 1_000 + 300 == 1_300
     // Set time to exactly the deadline.
@@ -531,7 +704,10 @@ fn challenge_accepted_at_exactly_deadline() {
     fund(&env, &token, &challenger, BOND);
     let uri = String::from_str(&env, "ipfs://at-deadline");
     let result = client.try_challenge(&challenger, &candidate_id, &uri, &BOND);
-    assert!(result.is_ok(), "challenge at deadline boundary should be accepted (guard is >)");
+    assert!(
+        result.is_ok(),
+        "challenge at deadline boundary should be accepted (guard is >)"
+    );
 }
 
 /// challenge one second after the deadline is rejected with ChallengeWindowClosed.
@@ -545,9 +721,14 @@ fn challenge_rejected_one_second_after_deadline() {
     fund(&env, &token, &proposer, BOND);
     let window = 300u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
         &(env.ledger().timestamp() + window + 3600),
-        &evidence(&env), &window, &BOND,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
     // challenge_deadline == 1_300; advance to 1_301
     set_time(&env, 1_301);
@@ -572,9 +753,14 @@ fn challenge_accepted_one_second_before_deadline() {
     fund(&env, &token, &proposer, BOND);
     let window = 300u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
         &(env.ledger().timestamp() + window + 3600),
-        &evidence(&env), &window, &BOND,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
     // challenge_deadline == 1_300; advance to 1_299
     set_time(&env, 1_299);
@@ -583,7 +769,10 @@ fn challenge_accepted_one_second_before_deadline() {
     fund(&env, &token, &challenger, BOND);
     let uri = String::from_str(&env, "ipfs://just-before-deadline");
     let result = client.try_challenge(&challenger, &candidate_id, &uri, &BOND);
-    assert!(result.is_ok(), "challenge one second before deadline should be accepted");
+    assert!(
+        result.is_ok(),
+        "challenge one second before deadline should be accepted"
+    );
 }
 
 // ── Issue #552: finalize window boundary tests ────────────────────────────────
@@ -607,9 +796,14 @@ fn finalize_rejected_at_exactly_deadline() {
     fund(&env, &token, &proposer, BOND);
     let window = 300u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env),
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
         &(env.ledger().timestamp() + window + 3600),
-        &evidence(&env), &window, &BOND,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
     // challenge_deadline == 1_300; attempt finalize at exactly 1_300
     set_time(&env, 1_300);
@@ -634,15 +828,25 @@ fn finalize_accepted_one_second_after_deadline() {
     // signature_expiry well in the future so it doesn't interfere
     let expiry = env.ledger().timestamp() + window + 7200;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &window, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
     // challenge_deadline == 1_300; advance to 1_301
     set_time(&env, 1_301);
 
     let finalizer = Address::generate(&env);
     let result = client.try_finalize(&finalizer, &candidate_id);
-    assert!(result.is_ok(), "finalize one second after deadline should succeed, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "finalize one second after deadline should succeed, got: {:?}",
+        result
+    );
 }
 
 // ── Issue #552: signature_expiry boundary tests at finalize ───────────────────
@@ -669,8 +873,14 @@ fn finalize_accepted_at_exactly_signature_expiry() {
     // that starts at 1_301 and the expiry is also exactly 1_301.
     let expiry = 1_301u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &window, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
 
     // Advance to the expiry second (which is also one second past the deadline)
@@ -699,8 +909,14 @@ fn finalize_rejected_one_second_after_signature_expiry() {
     // finalizeable. We'll advance one second past it to trigger SignatureExpired.
     let expiry = 1_301u64;
     let candidate_id = client.propose(
-        &proposer, &1u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &window, &BOND,
+        &proposer,
+        &1u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
 
     // Advance to expiry + 1
@@ -723,15 +939,22 @@ fn finalize_rejected_one_second_after_signature_expiry() {
 #[test]
 fn double_finalize_returns_already_finalized() {
     let env = Env::default();
-    let (client, _, _) = setup(&env);
+    let (client, _, _, token) = setup(&env);
     set_time(&env, 1_000);
 
     let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
     let window = MIN_WINDOW;
     let expiry = env.ledger().timestamp() + window + 7_200;
     let candidate_id = client.propose(
-        &proposer, &77u32, &true, &signature(&env), &expiry,
-        &evidence(&env), &window, &BOND,
+        &proposer,
+        &77u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
 
     // Advance past the challenge window.
@@ -758,15 +981,22 @@ fn double_finalize_returns_already_finalized() {
 #[test]
 fn finalized_candidate_status_is_persisted() {
     let env = Env::default();
-    let (client, _, _) = setup(&env);
+    let (client, _, _, token) = setup(&env);
     set_time(&env, 2_000);
 
     let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
     let window = MIN_WINDOW;
     let expiry = env.ledger().timestamp() + window + 7_200;
     let candidate_id = client.propose(
-        &proposer, &42u32, &false, &signature(&env), &expiry,
-        &evidence(&env), &window, &BOND,
+        &proposer,
+        &42u32,
+        &false,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
     );
 
     set_time(&env, 2_000 + window + 1);
@@ -775,7 +1005,203 @@ fn finalized_candidate_status_is_persisted() {
     client.finalize(&finalizer, &candidate_id);
 
     // The candidate retrieved from storage must show Finalized status.
-    let stored = client.get_candidate(&candidate_id).expect("candidate must exist");
+    let stored = client
+        .get_candidate(&candidate_id)
+        .expect("candidate must exist");
     assert_eq!(stored.status, crate::types::CandidateStatus::Finalized);
     assert!(stored.finalized_at.is_some(), "finalized_at must be set");
+}
+
+// ── Issue #701: fail closed without V1; resolution verifies V2 ─────────────
+
+/// Once the market contract has disabled legacy V1 oracle signatures (the
+/// default on a fresh deployment, #701), `propose`'s cross-contract
+/// `verify_signature` call must fail closed instead of silently succeeding
+/// and opening a challenge window for a candidate that `resolve_market`
+/// could never actually finalize.
+#[test]
+fn propose_rejects_when_market_has_disabled_v1() {
+    let env = Env::default();
+    let (client, _, market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    MockMarketClient::new(&env, &market_contract).set_v1_disabled(&true);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let err = client
+        .try_propose(
+            &proposer,
+            &1u32,
+            &true,
+            &signature(&env),
+            &(env.ledger().timestamp() + 60),
+            &evidence(&env),
+            &60,
+            &BOND,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
+    // No candidate should have been recorded for the market.
+    assert!(client.get_candidate_id_for_market(&1u32).is_none());
+}
+
+/// `finalize` must invoke the market contract's `resolve_market` with the
+/// real production signature — `(resolver, market_id: String, outcome,
+/// signature, expires_at)` — not the stale 3-argument shape that predated
+/// the `resolver`/`expires_at` parameters (#701). Verified by reading back
+/// what the mock market actually received.
+#[test]
+fn finalize_invokes_resolve_market_with_real_signature() {
+    let env = Env::default();
+    let (client, _, market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let window = MIN_WINDOW;
+    let expiry = env.ledger().timestamp() + window + 7_200;
+    let candidate_id = client.propose(
+        &proposer,
+        &5u32,
+        &true,
+        &signature(&env),
+        &expiry,
+        &evidence(&env),
+        &window,
+        &BOND,
+    );
+
+    set_time(&env, 1_000 + window + 1);
+    let finalizer = Address::generate(&env);
+    client.finalize(&finalizer, &candidate_id);
+
+    let last = MockMarketClient::new(&env, &market_contract)
+        .get_last_resolved()
+        .expect("resolve_market must have been invoked");
+    assert_eq!(last.resolver, client.address);
+    assert_eq!(last.market_id, String::from_str(&env, "5"));
+    assert_eq!(last.outcome, true);
+    assert!(!last.is_v2);
+}
+
+/// `propose_v2` + `finalize` end to end: verifies via the market's
+/// `verify_signature_v2` and, on finalize, invokes `resolve_market_v2` (not
+/// the legacy `resolve_market`) with the real production signature (#701).
+#[test]
+fn propose_v2_and_finalize_uses_resolve_market_v2() {
+    let env = Env::default();
+    let (client, _, market_contract, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let window = MIN_WINDOW;
+    let valid_until = env.ledger().timestamp() + window + 7_200;
+    let passphrase_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let candidate_id = client.propose_v2(
+        &proposer,
+        &9u32,
+        &true,
+        &signature(&env),
+        &valid_until,
+        &1u32,
+        &passphrase_hash,
+        &evidence(&env),
+        &window,
+        &BOND,
+    );
+
+    set_time(&env, 1_000 + window + 1);
+    let finalizer = Address::generate(&env);
+    let candidate = client.finalize(&finalizer, &candidate_id);
+    assert_eq!(candidate.status, crate::types::CandidateStatus::Finalized);
+    assert_eq!(candidate.epoch, 1u32);
+    assert_eq!(candidate.passphrase_hash, Some(passphrase_hash));
+
+    let last = MockMarketClient::new(&env, &market_contract)
+        .get_last_resolved()
+        .expect("resolve_market_v2 must have been invoked");
+    assert_eq!(last.resolver, client.address);
+    assert_eq!(last.market_id, String::from_str(&env, "9"));
+    assert!(
+        last.is_v2,
+        "finalize must call resolve_market_v2 for a V2 candidate"
+    );
+}
+
+/// `propose_v2` must reject the reserved all-zero signature the same way
+/// `propose` does, proving the V2 verification call is real (not a no-op).
+#[test]
+fn propose_v2_rejects_invalid_signature() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let bad_sig = BytesN::from_array(&env, &[0u8; 64]);
+    let err = client
+        .try_propose_v2(
+            &proposer,
+            &2u32,
+            &true,
+            &bad_sig,
+            &(env.ledger().timestamp() + 60),
+            &1u32,
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &evidence(&env),
+            &60,
+            &BOND,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
+}
+
+/// A candidate proposed via `propose_v2` must not be re-signable through the
+/// V1-only `appeal` path — that would silently downgrade a V2-verified
+/// candidate (still carrying its original `passphrase_hash`) to a
+/// V1-verified signature that `finalize` would then route to
+/// `resolve_market_v2` using stale V2 metadata (#701).
+#[test]
+fn appeal_rejects_v2_candidate() {
+    let env = Env::default();
+    let (client, _, _, token) = setup(&env);
+    set_time(&env, 1_000);
+
+    let proposer = Address::generate(&env);
+    fund(&env, &token, &proposer, BOND);
+    let window = MIN_WINDOW;
+    let valid_until = env.ledger().timestamp() + window + 7_200;
+    let candidate_id = client.propose_v2(
+        &proposer,
+        &11u32,
+        &true,
+        &signature(&env),
+        &valid_until,
+        &1u32,
+        &BytesN::from_array(&env, &[3u8; 32]),
+        &evidence(&env),
+        &window,
+        &BOND,
+    );
+
+    let challenger = Address::generate(&env);
+    fund(&env, &token, &challenger, BOND);
+    client.challenge(&challenger, &candidate_id, &evidence(&env), &BOND);
+
+    let err = client
+        .try_appeal(
+            &proposer,
+            &candidate_id,
+            &true,
+            &signature(&env),
+            &evidence(&env),
+            &window,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ContractError::Unauthorized);
 }

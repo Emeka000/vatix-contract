@@ -325,6 +325,9 @@ jobs:
             exit 1
           fi
 
+      - name: Fail closed without GSTUB (Issue #700)
+        run: bash scripts/check-no-wallet-fallback-stub.sh
+
       - name: Lint web app
         run: pnpm --filter web lint
 

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
@@ -495,13 +495,17 @@ fn multiple_markets_can_each_collect_fees() {
     assert_eq!(s.client.get_cumulative_fees(&s.token), 300);
 }
 
-// ── transfer_admin ────────────────────────────────────────────────────────────
+// ── propose_admin / execute_admin (timelocked, #658) ───────────────────────────
 
 #[test]
 fn transfer_admin_updates_admin() {
     let s = setup();
     let new_admin = Address::generate(&s.env);
-    s.client.transfer_admin(&s.admin, &new_admin);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_admin();
     assert_eq!(s.client.admin(), new_admin);
 }
 
@@ -512,7 +516,11 @@ fn transfer_admin_emits_event() {
 
     let s = setup();
     let new_admin = Address::generate(&s.env);
-    s.client.transfer_admin(&s.admin, &new_admin);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_admin();
 
     let events = s.env.events().all();
     // Last event is AdminTransferred (topic: admin_transferred)
@@ -520,12 +528,13 @@ fn transfer_admin_emits_event() {
     let topics = &ev.1;
     let topic0: Symbol = topics.get(0).unwrap().into_val(&s.env);
     assert_eq!(topic0, Symbol::new(&s.env, "admin_transferred"));
-
-    let data: Map<Symbol, Val> = ev.2.try_into_val(&s.env).unwrap();
-    let old_val: Address = data.get(Symbol::new(&s.env, "old_admin")).unwrap().into_val(&s.env);
-    let new_val: Address = data.get(Symbol::new(&s.env, "new_admin")).unwrap().into_val(&s.env);
+    let old_val: Address = topics.get(1).unwrap().into_val(&s.env);
+    let new_val: Address = topics.get(2).unwrap().into_val(&s.env);
     assert_eq!(old_val, s.admin);
     assert_eq!(new_val, new_admin);
+
+    let data: Map<Symbol, Val> = ev.2.try_into_val(&s.env).unwrap();
+    assert!(data.get(Symbol::new(&s.env, "transferred_at")).is_some());
 }
 
 #[test]
@@ -535,17 +544,31 @@ fn transfer_admin_rejects_non_admin() {
     let new_admin = Address::generate(&s.env);
     let err = s
         .client
-        .try_transfer_admin(&rando, &new_admin)
+        .try_propose_admin(&rando, &new_admin)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, TreasuryError::Unauthorized);
 }
 
 #[test]
+fn execute_admin_rejects_before_timelock_elapses() {
+    let s = setup();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    let err = s.client.try_execute_admin().unwrap_err().unwrap();
+    assert_eq!(err, TreasuryError::Unauthorized);
+    assert_eq!(s.client.admin(), s.admin);
+}
+
+#[test]
 fn new_admin_can_withdraw_after_transfer() {
     let s = setup();
     let new_admin = Address::generate(&s.env);
-    s.client.transfer_admin(&s.admin, &new_admin);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.env.ledger().with_mut(|li| {
+        li.timestamp += crate::ADDRESS_TIMELOCK_SECONDS + 1;
+    });
+    s.client.execute_admin();
 
     // old admin can no longer withdraw
     fund_treasury(&s, 100_000);

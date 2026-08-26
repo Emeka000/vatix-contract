@@ -72,11 +72,16 @@ pub mod oracle_adapter;
 // `positions` is called from `update_position` and `settle_position` inside the
 // `#[contractimpl]` block; the macro expansion hides the call-sites from Clippy's
 // dead-code analysis, so the allow is required to keep CI green.
-#[allow(dead_code)] // used via contractimpl macro expansion (positions::update_position, positions::calculate_locked_collateral)
+#[allow(dead_code)]
+// used via contractimpl macro expansion (positions::update_position, positions::calculate_locked_collateral)
 mod positions;
+// `reconciliation` is called from `get_position_token_parity` and
+// `reconcile_position_tokens` inside the `#[contractimpl]` block.
+mod reconciliation;
 // `settlement` is called from `settle_position` and `batch_settle_positions` inside
 // the `#[contractimpl]` block; same macro-expansion visibility issue as `positions`.
-#[allow(dead_code)] // used via contractimpl macro expansion (settlement::settle_position, settlement::batch_settle)
+#[allow(dead_code)]
+// used via contractimpl macro expansion (settlement::settle_position, settlement::batch_settle)
 pub mod settlement;
 mod withdraw;
 
@@ -87,20 +92,21 @@ mod withdraw;
 pub mod storage;
 mod test;
 #[cfg(test)]
-mod withdraw_fuzz;
-#[cfg(test)]
 mod tests_vectors;
 pub mod types;
+#[cfg(test)]
+mod withdraw_fuzz;
 // `validation` helpers are called from `deposit`, `withdraw`, `positions`, and
 // `oracle` sub-modules; Clippy cannot trace cross-module usages through the
 // `#![no_std]` + macro context and reports the module as dead without this allow.
-#[allow(dead_code)] // called by deposit::deposit_collateral, withdraw::withdraw_unused_collateral, oracle::verify_market_outcome
+#[allow(dead_code)]
+// called by deposit::deposit_collateral, withdraw::withdraw_unused_collateral, oracle::verify_market_outcome
 mod validation;
 
 use crate::error::ContractError;
 use crate::types::{AdapterType, Market, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
-use vatix_outcome_token_contract::{OutcomeTokenContractClient, types::TokenKind};
+use vatix_outcome_token_contract::{types::TokenKind, OutcomeTokenContractClient};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
 use vatix_resolution_contract::ResolutionContractClient;
 
@@ -191,10 +197,10 @@ impl MarketContract {
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         // 1. Validate admin address before authorization to fail fast
         validation::validate_admin_address(&admin)?;
-        
+
         // 2. Require authorization from the admin
         admin.require_auth();
-        
+
         // 3. Check if already initialized.
         //
         // `has_admin` is the canonical "already initialized" sentinel — the
@@ -228,10 +234,20 @@ impl MarketContract {
         // Writing version first eliminates the bricked state entirely.
         storage::set_version(&env);
         storage::set_admin(&env, &admin);
-        
+
+        // 4.5. Fail closed on legacy V1 oracle signatures (#701). V1 lacks
+        // the network-passphrase/epoch binding that V2 provides, so a fresh
+        // deployment must not silently accept it. Disabling it here — rather
+        // than relying on the storage default — means a misconfigured
+        // deployment that never calls `set_oracle_v1_disabled` still fails
+        // closed instead of quietly accepting weaker signatures. Operators
+        // who still need V1 for a migration window must explicitly
+        // re-enable it via `set_oracle_v1_disabled(admin, false)`.
+        storage::set_oracle_v1_disabled(&env, true);
+
         // 5. Emit initialization event
         events::emit_contract_initialized(&env, &admin);
-        
+
         Ok(())
     }
 
@@ -258,7 +274,7 @@ impl MarketContract {
         if !storage::has_admin(&env) {
             return Err(ContractError::NotAdmin);
         }
-        
+
         // 3. Verify current admin
         let stored_admin = storage::get_admin(&env)?;
         if current_admin != stored_admin {
@@ -266,7 +282,7 @@ impl MarketContract {
         }
         storage::set_pending_admin(&env, &new_admin);
         events::emit_admin_transfer_proposed(&env, &current_admin, &new_admin);
-        
+
         Ok(())
     }
 
@@ -338,10 +354,7 @@ impl MarketContract {
         validation::require_initialized(&env)?;
         validation::require_not_paused(&env)?;
         // Emergency mode: market creation is only allowed in Normal mode
-        validation::require_emergency_mode_allows(
-            &env,
-            &[crate::types::EmergencyMode::Normal],
-        )?;
+        validation::require_emergency_mode_allows(&env, &[crate::types::EmergencyMode::Normal])?;
         // 1. Verify creator is admin
         creator.require_auth();
         let admin = storage::get_admin(&env)?;
@@ -394,7 +407,14 @@ impl MarketContract {
         storage::append_market_id(&env, market_id);
 
         // 6. Emit event
-        events::emit_market_created(&env, market_id, &creator, &question, end_time, &metadata_uri);
+        events::emit_market_created(
+            &env,
+            market_id,
+            &creator,
+            &question,
+            end_time,
+            &metadata_uri,
+        );
 
         // 7. Return market ID
         Ok(market_id)
@@ -506,12 +526,12 @@ impl MarketContract {
             return Err(ContractError::MarketAlreadyResolved);
         }
 
-        // Step 1.5 (expiry): Reject stale oracle messages. A non-zero
-        // `expires_at` that is strictly less than the current ledger timestamp
-        // means the signed payload has outlived its intended window and must
-        // not be applied — prevents long-lived signatures being replayed weeks
-        // or months after they were originally produced.
-        if expires_at != 0 && env.ledger().timestamp() > expires_at {
+        // Step 1.5 (expiry): Reject stale oracle messages. Fails closed
+        // (#701): `expires_at == 0` is no longer treated as "no expiry" —
+        // that sentinel used to silently disable the whole check, letting a
+        // resolver bypass expiry entirely by passing zero. Every call must
+        // now supply a genuine future timestamp, or it is rejected outright.
+        if expires_at == 0 || env.ledger().timestamp() > expires_at {
             return Err(ContractError::OracleMessageExpired);
         }
 
@@ -640,6 +660,8 @@ impl MarketContract {
     ///
     /// # Errors
     /// - [`ContractError::MarketNotFound`] — the market does not exist.
+    /// - [`ContractError::UnauthorizedOracle`] — legacy V1 oracle signatures
+    ///   are disabled (#701; see [`set_oracle_v1_disabled`]).
     /// - [`ContractError::InvalidSignature`] / [`ContractError::UnauthorizedOracle`]
     ///   — signature does not verify (see [`oracle::verify_market_outcome`]).
     pub fn verify_signature(
@@ -648,6 +670,14 @@ impl MarketContract {
         outcome: bool,
         signature: BytesN<64>,
     ) -> Result<(), ContractError> {
+        // Fail closed (#701): this must mirror `resolve_market`'s V1 gate.
+        // Without it, the resolution contract's `propose()` — which calls
+        // this cross-contract to pre-validate a signature — would accept a
+        // V1 signature and open a challenge window for a candidate that
+        // `resolve_market` can never actually finalize once V1 is disabled.
+        if storage::is_oracle_v1_disabled(&env) {
+            return Err(ContractError::UnauthorizedOracle);
+        }
         let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
         oracle::verify_market_outcome(
             &env,
@@ -681,6 +711,8 @@ impl MarketContract {
             epoch,
             &signature,
         )
+    }
+
     /// Disable or enable legacy V1 oracle signatures (#657).
     ///
     /// Admin-controlled toggle for mainnet security compliance.
@@ -690,6 +722,7 @@ impl MarketContract {
         disabled: bool,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -721,6 +754,7 @@ impl MarketContract {
         enabled: bool,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -850,11 +884,7 @@ impl MarketContract {
     /// # Events
     /// Emits [`MarketCanceled`] with `market_id`, `canceler`, and
     /// `canceled_at` on success.
-    pub fn cancel_market(
-        env: Env,
-        admin: Address,
-        market_id: u32,
-    ) -> Result<(), ContractError> {
+    pub fn cancel_market(env: Env, admin: Address, market_id: u32) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
         validation::require_not_paused(&env)?;
         // 1. Authorization: only the stored admin may cancel a market.
@@ -909,11 +939,7 @@ impl MarketContract {
     ///
     /// # Events
     /// Emits [`MarketReopened`] with `market_id`, `admin`, and `reopened_at`.
-    pub fn reopen_market(
-        env: Env,
-        admin: Address,
-        market_id: u32,
-    ) -> Result<(), ContractError> {
+    pub fn reopen_market(env: Env, admin: Address, market_id: u32) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
         validation::require_not_paused(&env)?;
 
@@ -969,19 +995,19 @@ impl MarketContract {
         user: Address,
         market_id: u32,
     ) -> Result<i128, ContractError> {
+        validation::require_not_paused(&env)?;
         // 1. Authorization: only the position owner may reclaim their collateral.
         user.require_auth();
 
         // 2. The reclaim path is exclusive to canceled markets.
-        let market =
-            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
         if market.status != MarketStatus::Canceled {
             return Err(ContractError::MarketNotActive);
         }
 
         // 3. Load the user's position and the full deposited balance.
-        let mut position = storage::get_position(&env, market_id, &user)?
-            .ok_or(ContractError::NoPositionFound)?;
+        let mut position =
+            storage::get_position(&env, market_id, &user)?.ok_or(ContractError::NoPositionFound)?;
         let refund = position.total_deposited;
         if refund <= 0 {
             return Err(ContractError::InsufficientCollateral);
@@ -1019,7 +1045,7 @@ impl MarketContract {
     ///
     /// This function provides the on-chain interface for share trading, implementing
     /// the core logic from [`positions::update_position`] with comprehensive market-level
-    /// and authorization validations. It supports both buying (positive delta) and 
+    /// and authorization validations. It supports both buying (positive delta) and
     /// selling (negative delta) of YES and NO shares in a single atomic operation.
     ///
     /// # Trading Flow
@@ -1116,15 +1142,13 @@ impl MarketContract {
     ) -> Result<Position, ContractError> {
         validation::require_not_paused(&env)?;
         // Emergency mode: trading is blocked unless mode is Normal
-        validation::require_emergency_mode_allows(
-            &env,
-            &[crate::types::EmergencyMode::Normal],
-        )?;
+        validation::require_emergency_mode_allows(&env, &[crate::types::EmergencyMode::Normal])?;
         // 1. Authorization
         user.require_auth();
 
         // 2. Validate market state: must exist, be Active, and not be expired
-        let mut market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        let mut market =
+            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
         if market.status != MarketStatus::Active {
             return Err(ContractError::MarketNotActive);
         }
@@ -1166,11 +1190,11 @@ impl MarketContract {
         let result =
             positions::update_position(&env, market_id, &user, yes_delta, no_delta, market_price)
                 .map_err(|e| match e {
-                    positions::PositionError::ShareBalanceBelowZero => {
-                        ContractError::InvalidShareAmount
-                    }
-                    positions::PositionError::InvalidMarketPrice => ContractError::InvalidPrice,
-                })?;
+                positions::PositionError::ShareBalanceBelowZero => {
+                    ContractError::InvalidShareAmount
+                }
+                positions::PositionError::InvalidMarketPrice => ContractError::InvalidPrice,
+            })?;
 
         // 5a. Track first-time participants so the market can later be
         //     settled page-by-page via `settle_positions_page` (Issue #495)
@@ -1226,6 +1250,7 @@ impl MarketContract {
     /// # Events
     /// Emits `PositionSettled` with the payout amount.
     pub fn settle_position(env: Env, user: Address, market_id: u32) -> Result<i128, ContractError> {
+        validation::require_not_paused(&env)?;
         settlement::settle_position(&env, &user, market_id)
     }
 
@@ -1255,6 +1280,7 @@ impl MarketContract {
         market_id: u32,
         users: soroban_sdk::Vec<Address>,
     ) -> Result<i128, ContractError> {
+        validation::require_not_paused(&env)?;
         settlement::batch_settle_positions(&env, market_id, users)
     }
 
@@ -1275,6 +1301,7 @@ impl MarketContract {
         start_index: u32,
         limit: u32,
     ) -> Result<(i128, u32, bool), ContractError> {
+        validation::require_not_paused(&env)?;
         settlement::settle_positions_page(&env, market_id, start_index, limit)
     }
 
@@ -1304,12 +1331,13 @@ impl MarketContract {
         treasury: Address,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
             return Err(ContractError::NotAdmin);
         }
-        
+
         let effective_at = env.ledger().timestamp() + FEE_RATE_TIMELOCK_SECONDS; // Use same timelock duration
         storage::set_pending_treasury(
             &env,
@@ -1325,8 +1353,9 @@ impl MarketContract {
     /// Execute a previously proposed treasury contract change.
     pub fn execute_treasury_contract(env: Env) -> Result<Address, ContractError> {
         validation::require_initialized(&env)?;
-        let pending = storage::get_pending_treasury(&env)
-            .ok_or(ContractError::NoPendingFeeChange)?; // We can add NoPendingChange later, reusing NoPendingFeeChange for now
+        validation::require_not_paused(&env)?;
+        let pending =
+            storage::get_pending_treasury(&env).ok_or(ContractError::NoPendingFeeChange)?; // We can add NoPendingChange later, reusing NoPendingFeeChange for now
 
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::TimelockNotElapsed);
@@ -1341,6 +1370,7 @@ impl MarketContract {
     /// Cancel a pending treasury contract change.
     pub fn cancel_treasury_contract(env: Env, admin: Address) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1365,12 +1395,9 @@ impl MarketContract {
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
     /// - [`ContractError::InvalidPrice`] — `fee_rate_bps` outside 0–10_000.
     /// - [`ContractError::FeeCapExceeded`] — `fee_rate_bps` exceeds the fee cap.
-    pub fn set_fee_rate(
-        env: Env,
-        admin: Address,
-        fee_rate_bps: i128,
-    ) -> Result<(), ContractError> {
+    pub fn set_fee_rate(env: Env, admin: Address, fee_rate_bps: i128) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1413,9 +1440,10 @@ impl MarketContract {
         // complete and leaving the contract in an inconsistent state.
         // This is the same guard used by every other state-mutating entry point.
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
 
-        let pending = storage::get_pending_fee_rate_change(&env)
-            .ok_or(ContractError::NoPendingFeeChange)?;
+        let pending =
+            storage::get_pending_fee_rate_change(&env).ok_or(ContractError::NoPendingFeeChange)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::TimelockNotElapsed);
         }
@@ -1441,6 +1469,7 @@ impl MarketContract {
     /// - [`ContractError::InvalidPrice`] — `cap_bps` is outside 0–10_000.
     pub fn set_fee_cap(env: Env, admin: Address, cap_bps: i128) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1471,12 +1500,9 @@ impl MarketContract {
     /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
     /// - [`ContractError::InvalidFeeWaiverAccount`] — `account` is a contract
     ///   address or equals the admin.
-    pub fn add_fee_waiver(
-        env: Env,
-        admin: Address,
-        account: Address,
-    ) -> Result<(), ContractError> {
+    pub fn add_fee_waiver(env: Env, admin: Address, account: Address) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1502,6 +1528,7 @@ impl MarketContract {
         account: Address,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1556,6 +1583,7 @@ impl MarketContract {
         new_oracle_pubkey: BytesN<32>,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1567,8 +1595,7 @@ impl MarketContract {
             return Err(ContractError::InvalidSignature);
         }
 
-        let market =
-            storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        let market = storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
         if market.status != MarketStatus::Active {
             return Err(ContractError::MarketNotActive);
         }
@@ -1597,6 +1624,7 @@ impl MarketContract {
 
     pub fn execute_market_oracle(env: Env, market_id: u32) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         let pending = storage::get_pending_market_oracle(&env, market_id)
             .ok_or(ContractError::NoPendingFeeChange)?;
 
@@ -1627,8 +1655,13 @@ impl MarketContract {
         Ok(())
     }
 
-    pub fn cancel_market_oracle(env: Env, admin: Address, market_id: u32) -> Result<(), ContractError> {
+    pub fn cancel_market_oracle(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+    ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1658,6 +1691,7 @@ impl MarketContract {
         quorum: u32,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1682,6 +1716,7 @@ impl MarketContract {
     /// Execute a previously proposed threshold signers update (#665).
     pub fn execute_threshold_signers(env: Env) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         let pending = storage::get_pending_threshold_signers(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
 
@@ -1703,6 +1738,7 @@ impl MarketContract {
     /// Cancel a pending threshold signers update (#665).
     pub fn cancel_threshold_signers(env: Env, admin: Address) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1721,6 +1757,7 @@ impl MarketContract {
         quorum: u32,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1747,6 +1784,7 @@ impl MarketContract {
         quorum: u32,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1812,7 +1850,14 @@ impl MarketContract {
         let signers = storage::get_threshold_signers(&env);
         let quorum = storage::get_threshold_quorum(&env);
 
-        oracle::verify_threshold_signatures(&env, market_id, outcome, &signers, &signatures, quorum)?;
+        oracle::verify_threshold_signatures(
+            &env,
+            market_id,
+            outcome,
+            &signers,
+            &signatures,
+            quorum,
+        )?;
         events::emit_oracle_signature_verified(&env, market_id, outcome, env.ledger().timestamp());
 
         market.status = MarketStatus::Resolved;
@@ -1912,6 +1957,7 @@ impl MarketContract {
         outcome_token_contract: Address,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -1931,6 +1977,7 @@ impl MarketContract {
 
     pub fn execute_outcome_token_contract(env: Env) -> Result<Address, ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         let pending = storage::get_pending_outcome_token_contract(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
 
@@ -1947,6 +1994,7 @@ impl MarketContract {
 
     pub fn cancel_outcome_token_contract(env: Env, admin: Address) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -2037,6 +2085,7 @@ impl MarketContract {
         user: Address,
     ) -> Result<reconciliation::PositionTokenParity, ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -2060,6 +2109,7 @@ impl MarketContract {
         resolution_contract: Address,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -2079,6 +2129,7 @@ impl MarketContract {
 
     pub fn execute_resolution_contract(env: Env) -> Result<Address, ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         let pending = storage::get_pending_resolution_contract(&env)
             .ok_or(ContractError::NoPendingFeeChange)?;
 
@@ -2094,6 +2145,7 @@ impl MarketContract {
 
     pub fn cancel_resolution_contract(env: Env, admin: Address) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env)?;
         if admin != stored_admin {
@@ -2437,6 +2489,7 @@ impl MarketContract {
         market_id: u32,
     ) -> Result<(), ContractError> {
         validation::require_initialized(&env)?;
+        validation::require_not_paused(&env)?;
         admin.require_auth();
 
         // Only the stored admin may close a market to deposits.

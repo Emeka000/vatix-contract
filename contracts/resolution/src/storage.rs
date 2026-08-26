@@ -1,4 +1,4 @@
-use crate::types::{ChallengeRecord, ResolutionCandidate, ResolutionConfig};
+use crate::types::{ChallengeRecord, EmergencyMode, ResolutionCandidate, ResolutionConfig};
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
 #[contracttype]
@@ -16,6 +16,12 @@ pub enum StorageKey {
     /// contract's own balance until an admin registers one (mirrors the
     /// market contract's "fee retained, no treasury" pattern).
     Treasury,
+    /// Timelocked pending factory address change (172_800s delay).
+    PendingFactory,
+    /// Timelocked pending market contract address change (172_800s delay).
+    PendingMarketContract,
+    /// Mirrored emergency mode coordinated with the Market contract (#662).
+    EmergencyMode,
 }
 
 pub fn has_config(env: &Env) -> bool {
@@ -135,4 +141,23 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
 
 pub fn set_treasury(env: &Env, treasury: &Address) {
     env.storage().persistent().set(&StorageKey::Treasury, treasury);
+}
+
+// ── Emergency Mode (Issue #662) ─────────────────────────────────────────────
+
+/// Return the current mirrored emergency mode. Defaults to `Normal` when unset.
+pub fn get_emergency_mode(env: &Env) -> EmergencyMode {
+    env.storage()
+        .instance()
+        .get(&StorageKey::EmergencyMode)
+        .unwrap_or(EmergencyMode::Normal)
+}
+
+/// Set the mirrored emergency mode. Only the admin may call this (enforced in
+/// `lib.rs`). Operators should keep this value in sync with the Market and
+/// Treasury contracts for coordinated behaviour.
+pub fn set_emergency_mode(env: &Env, mode: &EmergencyMode) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::EmergencyMode, mode);
 }
