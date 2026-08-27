@@ -17,6 +17,15 @@
 use crate::error::ContractError;
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec};
 
+/// Maximum age, in seconds, that a Reflector or Pyth price observation may
+/// have before it is rejected as stale (#682). Both adapters read a
+/// timestamp/publish_time alongside the price but previously never checked
+/// it, so a disconnected or slow-to-update oracle node could have a market
+/// resolve against an arbitrarily old price. One hour is a pragmatic default
+/// — generous enough for normal Reflector/Pyth update cadences, tight enough
+/// to block a stuck feed from silently resolving a market.
+pub const MAX_PRICE_AGE_SECONDS: u64 = 3_600;
+
 // ---------------------------------------------------------------------------
 // Asset type used by Reflector (#379)
 // ---------------------------------------------------------------------------
@@ -157,6 +166,14 @@ impl OracleAdapter for ReflectorAdapter {
 
         let data = price_data.ok_or(ContractError::OraclePriceUnavailable)?;
 
+        // Reject stale prices (#682): a price observation older than
+        // `MAX_PRICE_AGE_SECONDS` must not be used to resolve a market, even
+        // though Reflector returned `Some(..)` rather than `None`.
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(data.timestamp) > MAX_PRICE_AGE_SECONDS {
+            return Err(ContractError::StalePrice);
+        }
+
         // YES when price >= threshold, NO otherwise.
         let resolved_yes = data.price >= self.resolution_price;
         if resolved_yes != outcome {
@@ -256,6 +273,13 @@ impl OracleAdapter for PythAdapter {
             &Symbol::new(env, "get_price"),
             price_args,
         );
+
+        // Reject stale prices (#682) — same staleness gate as Reflector,
+        // using Pyth's `publish_time` field.
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(price_data.publish_time) > MAX_PRICE_AGE_SECONDS {
+            return Err(ContractError::StalePrice);
+        }
 
         let resolved_yes = price_data.price >= self.resolution_price;
         if resolved_yes != outcome {

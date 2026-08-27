@@ -46,7 +46,7 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// - **v1:** Initial storage layout
 ///
 /// See `STORAGE_MIGRATION_GUIDE.md` and `MIGRATION.md` for detailed history.
-pub const STORAGE_VERSION: u32 = 5;
+pub const STORAGE_VERSION: u32 = 6;
 
 #[contracttype]
 pub enum StorageKey {
@@ -572,6 +572,34 @@ pub fn set_adapter_enabled(env: &Env, adapter_type: &crate::types::AdapterType, 
     env.storage()
         .persistent()
         .set(&StorageKey::AdapterEnabled(adapter_type.clone()), &enabled);
+}
+
+// --- Per-market Adapter Config (#681) ---
+
+/// Fetch the stored Reflector/Pyth adapter config for `market_id`, if any.
+///
+/// Returns `None` when the admin has not configured an adapter for this
+/// market yet — callers should fall back to Ed25519 verification rather than
+/// treating this as an error (see `oracle::verify_market_outcome`).
+pub fn get_market_adapter_config(
+    env: &Env,
+    market_id: u32,
+) -> Option<crate::types::MarketAdapterConfig> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MarketAdapterConfig(market_id))
+}
+
+/// Set (or replace) the Reflector/Pyth adapter config for `market_id`
+/// (admin-gated in `lib.rs`).
+pub fn set_market_adapter_config(
+    env: &Env,
+    market_id: u32,
+    config: &crate::types::MarketAdapterConfig,
+) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MarketAdapterConfig(market_id), config);
 }
 
 // --- Deposit Reentrancy Lock (Issue #501) ---

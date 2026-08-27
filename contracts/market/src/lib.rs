@@ -98,7 +98,8 @@ pub mod types;
 mod validation;
 
 use crate::error::ContractError;
-use crate::types::{AdapterType, Market, MarketStatus, Position};
+use crate::oracle_adapter::Asset;
+use crate::types::{AdapterType, Market, MarketAdapterConfig, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use vatix_outcome_token_contract::{OutcomeTokenContractClient, types::TokenKind};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
@@ -734,6 +735,48 @@ impl MarketContract {
     /// Return whether the given oracle adapter type is currently enabled (#488).
     pub fn is_adapter_enabled(env: Env, adapter_type: AdapterType) -> bool {
         storage::is_adapter_enabled(&env, &adapter_type)
+    }
+
+    /// Set (or replace) the Reflector/Pyth adapter config for `market_id`
+    /// (#681) — the oracle contract address, asset, and price threshold
+    /// `oracle::verify_market_outcome` uses once the corresponding adapter
+    /// type is enabled via `set_adapter_enabled` (#680).
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::MarketNotFound`] — `market_id` does not exist.
+    pub fn set_market_adapter_config(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        oracle_contract: Address,
+        asset: Asset,
+        resolution_price: i128,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        storage::set_market_adapter_config(
+            &env,
+            market_id,
+            &MarketAdapterConfig {
+                oracle_contract,
+                asset,
+                resolution_price,
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the stored Reflector/Pyth adapter config for `market_id`, if any (#681).
+    pub fn get_market_adapter_config(env: Env, market_id: u32) -> Option<MarketAdapterConfig> {
+        storage::get_market_adapter_config(&env, market_id)
     }
 
     /// Pause the contract for emergency maintenance.
