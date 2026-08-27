@@ -39,6 +39,8 @@ pub mod events;
 pub mod storage;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod distribute_proptest;
 
 pub use error::TreasuryError;
 
@@ -185,14 +187,20 @@ impl TreasuryContract {
             return Err(TreasuryError::InsufficientBalance);
         }
 
-        let treasury = env.current_contract_address();
-        token::Client::new(&env, &token).transfer(&treasury, &to, &amount);
-
+        // Effects before Interactions (Checks-Effects-Interactions, Issue
+        // #695): persist the reduced balance and cumulative total BEFORE the
+        // external token transfer below. Previously the transfer ran first
+        // and both storage writes happened after it, so a reentrant call
+        // back into a balance-reading entry point mid-transfer would have
+        // observed the stale, not-yet-decremented balance.
         let remaining = balance - amount;
         storage::set_token_balance(&env, &token, remaining);
 
         let prev_total = storage::get_total_collected(&env)?;
         storage::set_total_collected(&env, prev_total.checked_sub(amount).unwrap_or(0));
+
+        let treasury = env.current_contract_address();
+        token::Client::new(&env, &token).transfer(&treasury, &to, &amount);
 
         events::emit_fees_withdrawn(&env, &token, &to, amount, remaining);
         Ok(())
@@ -439,12 +447,17 @@ impl TreasuryContract {
 
     // ── Stakeholder fee distribution (#485) ────────────────────────────────────
 
-    /// Configure the stakeholder revenue-share list (admin only).
+    /// Propose a new stakeholder revenue-share list, subject to the same
+    /// `ADDRESS_TIMELOCK_SECONDS` delay used by [`Self::propose_admin`] /
+    /// [`Self::propose_market_contract`] (Issue #689). Admin only.
     ///
     /// `stakeholders` is a list of `(address, share_bps)` pairs. `share_bps`
-    /// values must sum to exactly 10_000 (100%); this fully replaces any
-    /// previously configured list.
-    pub fn set_stakeholders(
+    /// values must sum to exactly 10_000 (100%); once executed this fully
+    /// replaces any previously configured list. The full payload is emitted
+    /// on [`StakeholdersProposed`](events::StakeholdersProposed) so an
+    /// off-chain indexer can reconstruct the pending split without an extra
+    /// on-chain read.
+    pub fn propose_stakeholders(
         env: Env,
         caller: Address,
         stakeholders: Vec<(Address, u32)>,
@@ -471,10 +484,66 @@ impl TreasuryContract {
             return Err(TreasuryError::InvalidStakeholderWeights);
         }
 
-        let count = stakeholders.len();
-        storage::set_stakeholders(&env, &stakeholders);
-        events::emit_stakeholders_updated(&env, count);
+        let effective_at = env.ledger().timestamp() + ADDRESS_TIMELOCK_SECONDS;
+        storage::set_pending_stakeholders(
+            &env,
+            &storage::PendingStakeholders {
+                stakeholders: stakeholders.clone(),
+                effective_at,
+            },
+        );
+
+        let mut addrs: Vec<Address> = Vec::new(&env);
+        let mut shares: Vec<u32> = Vec::new(&env);
+        for (addr, share_bps) in stakeholders.iter() {
+            addrs.push_back(addr.clone());
+            shares.push_back(share_bps);
+        }
+        events::emit_stakeholders_proposed(&env, &addrs, &shares, effective_at);
         Ok(())
+    }
+
+    /// Apply a previously-proposed stakeholder list once its timelock has
+    /// elapsed (Issue #689). Callable by anyone — the timelock itself is the
+    /// access control.
+    pub fn execute_stakeholders(env: Env) -> Result<(), TreasuryError> {
+        let pending = storage::get_pending_stakeholders(&env)
+            .ok_or(TreasuryError::NoPendingStakeholderChange)?;
+
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(TreasuryError::TimelockNotElapsed);
+        }
+
+        storage::set_stakeholders(&env, &pending.stakeholders);
+        storage::clear_pending_stakeholders(&env);
+
+        let mut addrs: Vec<Address> = Vec::new(&env);
+        let mut shares: Vec<u32> = Vec::new(&env);
+        for (addr, share_bps) in pending.stakeholders.iter() {
+            addrs.push_back(addr.clone());
+            shares.push_back(share_bps);
+        }
+        events::emit_stakeholders_updated(&env, &addrs, &shares);
+        Ok(())
+    }
+
+    /// Cancel a pending stakeholder list change before it takes effect.
+    pub fn cancel_stakeholders(env: Env, caller: Address) -> Result<(), TreasuryError> {
+        caller.require_auth();
+        if !storage::has_admin(&env) {
+            return Err(TreasuryError::NotInitialized);
+        }
+        let admin = storage::get_admin(&env)?;
+        if caller != admin {
+            return Err(TreasuryError::Unauthorized);
+        }
+        storage::clear_pending_stakeholders(&env);
+        Ok(())
+    }
+
+    /// Return the currently pending stakeholder change, if any (Issue #689).
+    pub fn get_pending_stakeholders(env: Env) -> Option<storage::PendingStakeholders> {
+        storage::get_pending_stakeholders(&env)
     }
 
     /// Return the configured `(stakeholder, share_bps)` list.
@@ -547,12 +616,14 @@ impl TreasuryContract {
             return Err(TreasuryError::InsufficientBalance);
         }
 
-        // ── Checks/Effects: compute every stakeholder's share and persist the
-        // reduced balance *before* any external token transfer is made
-        // (CEI — see docs/reentrancy-cei-audit.md). Floor division on
-        // `share_bps` means `sum(amount)` can be a few stroops less than
-        // `balance`; that dust is intentionally *not* zeroed out here — see
-        // the doc comment on `distribute_fees` for where it goes.
+        // Effects before Interactions (Checks-Effects-Interactions, Issue
+        // #695): compute every stakeholder's payout and persist the reduced
+        // balance BEFORE making any external transfer. Previously each
+        // transfer fired inside the same loop that accumulated
+        // `distributed`, with storage::set_token_balance only updated after
+        // every transfer had already gone out — a reentrant call back into
+        // a balance-reading entry point mid-loop would have observed the
+        // stale, not-yet-decremented balance.
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut distributed: i128 = 0;
         for (stakeholder, share_bps) in stakeholders.iter() {
@@ -561,6 +632,7 @@ impl TreasuryContract {
                 .ok_or(TreasuryError::ArithmeticOverflow)?
                 / BPS_DENOMINATOR;
             if amount > 0 {
+                payouts.push_back((stakeholder, amount));
                 distributed = distributed
                     .checked_add(amount)
                     .ok_or(TreasuryError::ArithmeticOverflow)?;
@@ -578,8 +650,6 @@ impl TreasuryContract {
         let remaining = balance - distributed;
         storage::set_token_balance(&env, &token, remaining);
 
-        // ── Interactions: only after state is committed do we make the
-        // external token transfer calls.
         let treasury = env.current_contract_address();
         let token_client = token::Client::new(&env, &token);
         for (stakeholder, amount) in payouts.iter() {

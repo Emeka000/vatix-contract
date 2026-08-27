@@ -33,8 +33,12 @@ pub enum TreasuryError {
     NotInitialized = 33,
 
     /// `distribute_fees` was called but no stakeholder list has been
-    /// configured via `set_stakeholders`.
+    /// configured via `execute_stakeholders`.
     NoStakeholdersConfigured = 34,
+
+    /// `execute_stakeholders` / `cancel_stakeholders` was called but no
+    /// stakeholder change is currently pending (Issue #689).
+    NoPendingStakeholderChange = 35,
 
     // ── Authorization (40–49) ─────────────────────────────────────────────────
     /// `collect_fee` was invoked by an address that is not the registered
@@ -58,6 +62,10 @@ pub enum TreasuryError {
     // ── Arithmetic (60–69) ────────────────────────────────────────────────────
     /// Arithmetic operation overflowed.
     ArithmeticOverflow = 60,
+
+    // ── Timelock (70–79) ──────────────────────────────────────────────────────
+    /// A pending timelocked change's `effective_at` has not been reached yet.
+    TimelockNotElapsed = 70,
 }
 
 #[cfg(test)]

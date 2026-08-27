@@ -14,4 +14,11 @@ pub enum ContractError {
     /// resolved. Outcome tokens are only transferable once the market they
     /// belong to has settled its outcome.
     MarketNotResolved = 7,
+    /// The on-chain storage schema version does not match the version this
+    /// contract build expects (Issue #696). Mirrors
+    /// `vatix_market_contract::ContractError::UpgradeRequired` /
+    /// `vatix_treasury_contract::TreasuryError::UpgradeRequired` — blocks
+    /// `mint`/`burn`/`transfer` against a stale on-chain layout after a
+    /// partial cross-contract upgrade instead of silently corrupting balances.
+    UpgradeRequired = 8,
 }
