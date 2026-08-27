@@ -335,6 +335,12 @@ impl ResolutionContract {
             bond_amount,
         };
 
+        // Effects: persist the new candidate (status = Proposed) *before*
+        // making any external call (CEI — issue #686, see
+        // docs/reentrancy-cei-audit.md). Previously the bond transfer below
+        // ran first, leaving a window where a malicious/upgraded token
+        // contract's `transfer` callback could re-enter this contract while
+        // no candidate record existed yet for this market.
         storage::set_candidate(&env, &candidate);
         events::emit_candidate_proposed(&env, &candidate);
 
@@ -428,6 +434,12 @@ impl ResolutionContract {
             &challenge_uri,
             bond_amount,
         );
+
+        // Interactions: lock the challenger's bond only after state is
+        // committed.
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
+
         Ok(())
     }
 

@@ -31,9 +31,13 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 /// 5. Initialize: `stellar contract invoke ... -- initialize --admin <addr>`
 /// 6. Verify old deployment returns `UpgradeRequired` error
 ///
-/// ## Current version: 5
+/// ## Current version: 6
 ///
 /// ### Version history:
+/// - **v6:** Added `CollateralBalance(Address)` and
+///   `TotalLockedCollateral(Address)` — the protocol-wide, user-scoped
+///   collateral ledger introduced by ADR-002 (issue #685). See
+///   `docs/adr-002-protocol-wide-collateral.md`.
 /// - **v5:** Added `EmergencyMode` storage for coordinated emergency mode (#662)
 /// - **v4:** Added per-adapter-type `AdapterEnabled` flag for the Reflector/Pyth
 ///   Ed25519 fallback path (#488)
@@ -114,6 +118,21 @@ pub enum StorageKey {
     MarketThresholdSigners(u32),
     /// Per-market threshold quorum override (#665).
     MarketThresholdQuorum(u32),
+    /// Protocol-wide collateral balance for a user, scoped by user only —
+    /// **not** by market (ADR-002, issue #685). Deposits made via
+    /// `deposit_collateral` credit this balance regardless of which market
+    /// they were deposited against, and it is the shared pool checked
+    /// against when a trade in *any* market would increase that market's
+    /// locked collateral. This replaces the old per-market silo where a
+    /// user had to re-deposit collateral separately for every market.
+    CollateralBalance(Address),
+    /// Aggregate `locked_collateral` across every market for a user
+    /// (ADR-002, issue #685). Kept in sync by
+    /// `MarketContract::update_position` so the protocol-wide invariant
+    /// (`sum of locked_collateral across all markets <= CollateralBalance`)
+    /// can be checked in O(1) instead of iterating every market the user
+    /// has ever traded in.
+    TotalLockedCollateral(Address),
 }
 
 pub fn get_pending_threshold_signers(env: &Env) -> Option<crate::types::PendingThresholdSignersChange> {
@@ -249,6 +268,41 @@ pub fn set_position(
 pub fn has_position(env: &Env, market_id: u32, user: &Address) -> Result<bool, ContractError> {
     assert_version(env)?;
     Ok(env.storage().persistent().has(&StorageKey::Position(market_id, user.clone())))
+}
+
+// --- Protocol-wide Collateral (ADR-002, Issue #685) ---
+
+/// Return `user`'s protocol-wide collateral balance (the sum of everything
+/// they have deposited across every market via `deposit_collateral`).
+/// Defaults to `0` when the user has never deposited.
+pub fn get_collateral_balance(env: &Env, user: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::CollateralBalance(user.clone()))
+        .unwrap_or(0)
+}
+
+/// Set `user`'s protocol-wide collateral balance.
+pub fn set_collateral_balance(env: &Env, user: &Address, balance: i128) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::CollateralBalance(user.clone()), &balance);
+}
+
+/// Return the aggregate `locked_collateral` across every market for `user`.
+/// Defaults to `0` when the user has no open positions.
+pub fn get_total_locked_collateral(env: &Env, user: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::TotalLockedCollateral(user.clone()))
+        .unwrap_or(0)
+}
+
+/// Set the aggregate `locked_collateral` across every market for `user`.
+pub fn set_total_locked_collateral(env: &Env, user: &Address, locked: i128) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::TotalLockedCollateral(user.clone()), &locked);
 }
 
 // --- Market Participants (Issue #495) ---

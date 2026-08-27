@@ -125,10 +125,24 @@ pub fn deposit_collateral(
     // - Global user balance (deposit once, trade anywhere)
     // - Better capital efficiency
     //
-    // # Current Flow
-    // 1. User deposits USDC into specific market
-    // 2. Collateral locked to this market only
-    // 3. User must deposit separately for each market they want to trade
+    // Every deposit credits `storage::CollateralBalance(user)`, a balance
+    // scoped by *user only* (not by market — see `StorageKey::CollateralBalance`
+    // in `storage.rs`). `MarketContract::update_position` checks a trade's
+    // prospective lock against this shared balance (net of whatever is
+    // already locked in the user's *other* markets, tracked in
+    // `StorageKey::TotalLockedCollateral`), which is what lets a user deposit
+    // once and trade in any market without a second deposit.
+    //
+    // The legacy per-market `Position.total_deposited` field below is kept
+    // as-is for backward compatibility with `withdraw_unused_collateral` and
+    // settlement, which still refund/settle per market; migrating those to
+    // draw from the protocol-wide balance is tracked as follow-up work in
+    // the ADR.
+    let new_collateral_balance = storage::get_collateral_balance(&env, &user)
+        .checked_add(amount)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+    storage::set_collateral_balance(&env, &user, new_collateral_balance);
+
     let mut position = storage::get_position(&env, market_id, &user)?.unwrap_or_else(|| Position {
         market_id,
         user: user.clone(),

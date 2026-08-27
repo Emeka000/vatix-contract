@@ -15,6 +15,10 @@ pub enum PositionError {
     ShareBalanceBelowZero = 1,
     /// Market price is outside the valid basis-point range (0–10_000)
     InvalidMarketPrice = 2,
+    /// The user's protocol-wide collateral balance cannot cover this
+    /// market's prospective lock once collateral already locked in the
+    /// user's other markets is accounted for (ADR-002, issue #685).
+    InsufficientProtocolCollateral = 3,
 }
 
 /// Scale `amount` by `price_bps` basis points (i.e. `amount * price_bps / 10_000`).
@@ -78,6 +82,33 @@ pub fn validate_position_change(
         return Err(PositionError::ShareBalanceBelowZero);
     }
 
+    Ok(())
+}
+
+/// Check whether a user's protocol-wide collateral balance (ADR-002, issue
+/// #685) can cover a prospective locked-collateral amount for one market,
+/// once collateral already locked in the user's *other* markets is taken
+/// into account.
+///
+/// Replaces the old per-market check against `Position.total_deposited`:
+/// `collateral_balance` is the user's single balance shared across every
+/// market (see `storage::CollateralBalance`), and `locked_elsewhere` is the
+/// sum of `locked_collateral` across every *other* market the user holds a
+/// position in (see `storage::TotalLockedCollateral`). A trade that would
+/// only keep this market's lock flat or reduce it is never rejected by this
+/// check — callers should only invoke it when the lock is increasing.
+///
+/// # Errors
+/// Returns [`PositionError::InsufficientProtocolCollateral`] when
+/// `prospective_locked + locked_elsewhere > collateral_balance`.
+pub fn check_protocol_collateral(
+    prospective_locked: i128,
+    collateral_balance: i128,
+    locked_elsewhere: i128,
+) -> Result<(), PositionError> {
+    if prospective_locked.saturating_add(locked_elsewhere) > collateral_balance {
+        return Err(PositionError::InsufficientProtocolCollateral);
+    }
     Ok(())
 }
 

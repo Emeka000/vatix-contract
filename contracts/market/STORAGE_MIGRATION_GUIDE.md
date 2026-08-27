@@ -651,7 +651,41 @@ pub fn new_storage_function(env: &Env) {
 
 ## Version History
 
-### Version 4 (Current)
+### Version 6 (Current)
+
+**Date:** 2026-08-25
+**Changes:**
+- Added `StorageKey::CollateralBalance(Address)` and
+  `StorageKey::TotalLockedCollateral(Address)` — a protocol-wide, user-scoped
+  collateral ledger (ADR-002, issue #685). `deposit_collateral` credits
+  `CollateralBalance(user)` in addition to the existing per-market
+  `Position.total_deposited`, and `update_position` checks a trade's
+  prospective lock against this shared balance (net of what is already
+  locked in the user's other markets) instead of the per-market field alone.
+  See `docs/adr-002-protocol-wide-collateral.md`.
+
+**Migration:** Fresh deployment required. No data migration available.
+Existing per-market `Position` records are untouched; a user's protocol-wide
+`CollateralBalance` and `TotalLockedCollateral` simply start at `0` and
+accrue from the next `deposit_collateral` / `update_position` call onward.
+
+**Breaking Changes:** None (additive only) — two new `StorageKey` variants.
+
+---
+
+### Version 5
+
+**Date:** 2026-Q2
+**Changes:**
+- Added `EmergencyMode` storage for coordinated emergency mode (#662)
+
+**Migration:** Fresh deployment required. No data migration available.
+
+**Breaking Changes:** None (additive only) — new `StorageKey` variant.
+
+---
+
+### Version 4
 
 **Date:** 2025-Q1
 **Changes:**
