@@ -39,6 +39,8 @@ pub mod events;
 pub mod storage;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod distribute_proptest;
 
 pub use error::TreasuryError;
 
@@ -185,14 +187,20 @@ impl TreasuryContract {
             return Err(TreasuryError::InsufficientBalance);
         }
 
-        let treasury = env.current_contract_address();
-        token::Client::new(&env, &token).transfer(&treasury, &to, &amount);
-
+        // Effects before Interactions (Checks-Effects-Interactions, Issue
+        // #695): persist the reduced balance and cumulative total BEFORE the
+        // external token transfer below. Previously the transfer ran first
+        // and both storage writes happened after it, so a reentrant call
+        // back into a balance-reading entry point mid-transfer would have
+        // observed the stale, not-yet-decremented balance.
         let remaining = balance - amount;
         storage::set_token_balance(&env, &token, remaining);
 
         let prev_total = storage::get_total_collected(&env)?;
         storage::set_total_collected(&env, prev_total.checked_sub(amount).unwrap_or(0));
+
+        let treasury = env.current_contract_address();
+        token::Client::new(&env, &token).transfer(&treasury, &to, &amount);
 
         events::emit_fees_withdrawn(&env, &token, &to, amount, remaining);
         Ok(())
@@ -589,9 +597,15 @@ impl TreasuryContract {
             return Err(TreasuryError::InsufficientBalance);
         }
 
-        let treasury = env.current_contract_address();
-        let token_client = token::Client::new(&env, &token);
-
+        // Effects before Interactions (Checks-Effects-Interactions, Issue
+        // #695): compute every stakeholder's payout and persist the reduced
+        // balance BEFORE making any external transfer. Previously each
+        // transfer fired inside the same loop that accumulated
+        // `distributed`, with storage::set_token_balance only updated after
+        // every transfer had already gone out — a reentrant call back into
+        // a balance-reading entry point mid-loop would have observed the
+        // stale, not-yet-decremented balance.
+        let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut distributed: i128 = 0;
         for (stakeholder, share_bps) in stakeholders.iter() {
             let amount = balance
@@ -599,7 +613,7 @@ impl TreasuryContract {
                 .ok_or(TreasuryError::ArithmeticOverflow)?
                 / BPS_DENOMINATOR;
             if amount > 0 {
-                token_client.transfer(&treasury, &stakeholder, &amount);
+                payouts.push_back((stakeholder, amount));
                 distributed = distributed
                     .checked_add(amount)
                     .ok_or(TreasuryError::ArithmeticOverflow)?;
@@ -608,6 +622,13 @@ impl TreasuryContract {
 
         let remaining = balance - distributed;
         storage::set_token_balance(&env, &token, remaining);
+
+        let treasury = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        for (stakeholder, amount) in payouts.iter() {
+            token_client.transfer(&treasury, &stakeholder, &amount);
+        }
+
         events::emit_fees_distributed(&env, &token, distributed, remaining, stakeholders.len());
         Ok(())
     }

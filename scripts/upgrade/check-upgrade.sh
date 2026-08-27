@@ -8,11 +8,12 @@
 #
 #   Phase A — Storage-version drift check (always runs, no external tools
 #             needed beyond jq). Compares the STORAGE_VERSION constant
-#             compiled into contracts/{market,treasury}/src/storage.rs
+#             compiled into contracts/{market,treasury,resolution,outcome-token}/src/storage.rs
 #             against the recorded value in version-matrix.json and fails on
-#             any mismatch. resolution/outcome-token have no STORAGE_VERSION
-#             constant yet, so they're checked for the absence being
-#             correctly reflected in the matrix instead.
+#             any mismatch. As of issue #696 all four contracts carry a
+#             STORAGE_VERSION constant; check_version_drift also still
+#             handles the (now hypothetical) case of an unversioned contract
+#             whose absence isn't correctly reflected in the matrix.
 #
 #   Phase B — WASM hash verification (guarded on the `stellar` CLI being on
 #             PATH). Builds each contract via `stellar contract build` and
@@ -22,9 +23,10 @@
 #             failure.
 #
 #   Phase C — UpgradeRequired regression tests (guarded on `cargo` being on
-#             PATH). Runs the existing version-guard unit tests for the two
-#             versioned contracts (market, treasury) to simulate the
-#             upgrade-required code path before it's ever hit in production.
+#             PATH). Runs the existing version-guard unit tests for all four
+#             versioned contracts (market, treasury, resolution,
+#             outcome-token — see #696) to simulate the upgrade-required
+#             code path before it's ever hit in production.
 #
 # See scripts/upgrade/UPGRADE_PLAYBOOK.md for the full playbook this script
 # is one step of.
@@ -190,6 +192,8 @@ else
 
   run_version_tests "vatix-market-contract"
   run_version_tests "vatix-treasury-contract"
+  run_version_tests "vatix-resolution-contract"
+  run_version_tests "vatix-outcome-token-contract"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

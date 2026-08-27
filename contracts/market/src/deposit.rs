@@ -119,11 +119,6 @@ pub fn deposit_collateral(
         return Err(ContractError::MarketExpired);
     }
 
-    // Transfer USDC from user to contract
-    let contract_address = env.current_contract_address();
-    let token_client = TokenClient::new(&env, &market.collateral_token);
-    token_client.transfer(&user, &contract_address, &amount);
-
     // TODO: Refactor collateral management
     // Current design requires separate deposits per market. Users cannot use
     // Market A collateral for Market B trades. refactor will introduce:
@@ -158,7 +153,15 @@ pub fn deposit_collateral(
         .checked_add(amount)
         .ok_or(ContractError::ArithmeticOverflow)?;
 
-    // Persist updated position
+    // Persist updated position — done BEFORE the external token transfer
+    // below (Checks-Effects-Interactions, Issue #695). Previously the
+    // transfer ran first and every state write happened after it; the
+    // `DepositReentrancyGuard` above (#501) already blocks a reentrant
+    // second call into `deposit_collateral` from inside that transfer, but
+    // ordering state writes before the external call is defense in depth
+    // that costs nothing here — nothing below depends on the transfer's
+    // return value, and a failed/panicking transfer aborts the whole
+    // transaction (including these writes) atomically regardless of order.
     storage::set_position(&env, market_id, &user, &position)?;
 
     // Track first-time depositors in the MarketParticipants list (Issue #546 / #495).
@@ -173,6 +176,13 @@ pub fn deposit_collateral(
 
     // Record deposit timestamp for cooldown enforcement on withdrawals (issue #413).
     storage::set_last_deposit_time(&env, market_id, &user, env.ledger().timestamp());
+
+    // Transfer USDC from user to contract — the external (Interactions) call,
+    // now ordered after every state write above (Checks-Effects-Interactions,
+    // Issue #695).
+    let contract_address = env.current_contract_address();
+    let token_client = TokenClient::new(&env, &market.collateral_token);
+    token_client.transfer(&user, &contract_address, &amount);
 
     // TODO(#issue): consider batching deposit events for gas efficiency
     // Emit event

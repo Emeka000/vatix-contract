@@ -1,8 +1,25 @@
-use crate::types::{OutcomeTokenConfig, PendingAddressChange, TokenKind};
+use crate::error::ContractError;
+use crate::types::{OutcomeTokenConfig, TokenKind};
 use soroban_sdk::{contracttype, Address, Env};
+
+/// Bump this constant whenever the outcome-token storage layout changes in a
+/// breaking way. `initialize()` writes this value; state-mutating entry
+/// points assert it via [`assert_version`] before touching storage — mirrors
+/// the pattern already used by `contracts/market/src/storage.rs` and
+/// `contracts/treasury/src/storage.rs` (Issue #696). Previously this crate
+/// had no storage-version guard at all, so a partial cross-contract upgrade
+/// could silently brick `mint`/`burn` against a stale on-chain layout instead
+/// of failing closed with `UpgradeRequired`.
+///
+/// ## Version history
+/// - **v1:** Initial versioned storage layout (Issue #696). No layout change
+///   from the pre-versioning schema — this just adds the guard itself.
+pub const STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
 pub enum StorageKey {
+    /// Written by `initialize`; used to detect stale or uninitialized deployments.
+    StorageVersion,
     Config,
     /// Per-market, per-user, per-side balance.
     Balance(u32, Address, TokenKind),
@@ -11,6 +28,28 @@ pub enum StorageKey {
     /// A proposed `market_contract` (mint authority) rotation awaiting its
     /// timelock delay (Issue #691).
     PendingMarketContract,
+}
+
+// ── Version ───────────────────────────────────────────────────────────────
+
+pub fn set_version(env: &Env) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::StorageVersion, &STORAGE_VERSION);
+}
+
+pub fn get_version(env: &Env) -> Option<u32> {
+    env.storage().persistent().get(&StorageKey::StorageVersion)
+}
+
+/// Guard state-mutating entry points against a stale/pre-migration
+/// deployment. Returns [`ContractError::UpgradeRequired`] when the on-chain
+/// schema version does not match the compiled contract version.
+pub fn assert_version(env: &Env) -> Result<(), ContractError> {
+    if get_version(env) != Some(STORAGE_VERSION) {
+        return Err(ContractError::UpgradeRequired);
+    }
+    Ok(())
 }
 
 pub fn has_config(env: &Env) -> bool {
@@ -71,4 +110,40 @@ pub fn set_total_supply(env: &Env, market_id: u32, kind: &TokenKind, supply: i12
     env.storage()
         .persistent()
         .set(&StorageKey::TotalSupply(market_id, kind.clone()), &supply);
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_assert_version_passes_when_current() {
+        let env = Env::default();
+        let contract_id = env.register(crate::OutcomeTokenContract, ());
+        env.as_contract(&contract_id, || {
+            set_version(&env);
+            assert!(assert_version(&env).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_assert_version_fails_when_stale() {
+        let env = Env::default();
+        let contract_id = env.register(crate::OutcomeTokenContract, ());
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&StorageKey::StorageVersion, &0u32);
+            assert_eq!(assert_version(&env), Err(ContractError::UpgradeRequired));
+        });
+    }
+
+    #[test]
+    fn test_assert_version_fails_when_missing() {
+        let env = Env::default();
+        let contract_id = env.register(crate::OutcomeTokenContract, ());
+        env.as_contract(&contract_id, || {
+            assert_eq!(assert_version(&env), Err(ContractError::UpgradeRequired));
+        });
+    }
 }
