@@ -61,6 +61,43 @@ pub fn emit_token_burned(
     .publish(env);
 }
 
+/// Emitted when an admin proposes rotating the `market_contract` (mint/burn
+/// authority) address (Issue #691). Does not take effect until
+/// `effective_at` and `execute_market_contract` is called.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractProposed {
+    #[topic]
+    pub market_contract: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_market_contract_proposed(env: &Env, market_contract: &Address, effective_at: u64) {
+    MarketContractProposed {
+        market_contract: market_contract.clone(),
+        effective_at,
+    }
+    .publish(env);
+}
+
+/// Emitted once a proposed `market_contract` rotation's timelock has elapsed
+/// and it is applied (Issue #691).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MarketContractSet {
+    #[topic]
+    pub market_contract: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_market_contract_set(env: &Env, market_contract: &Address) {
+    MarketContractSet {
+        market_contract: market_contract.clone(),
+        set_at: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct TokenTransferred {

@@ -41,12 +41,26 @@ pub enum StorageKey {
     FeeTokens,
     PendingMarketContract,
     PendingAdmin,
+    /// A proposed stakeholder revenue-share list awaiting its timelock delay
+    /// before it can take effect (Issue #689). Mirrors `PendingAdmin` /
+    /// `PendingMarketContract` so the revenue split cannot be rewritten
+    /// instantly.
+    PendingStakeholders,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct PendingAddressChange {
     pub new_address: Address,
+    pub effective_at: u64,
+}
+
+/// A proposed stakeholder revenue-share list awaiting its timelock delay
+/// (Issue #689).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingStakeholders {
+    pub stakeholders: Vec<(Address, u32)>,
     pub effective_at: u64,
 }
 
@@ -256,6 +270,23 @@ pub fn set_stakeholders(env: &Env, stakeholders: &Vec<(Address, u32)>) {
     env.storage()
         .instance()
         .set(&StorageKey::Stakeholders, stakeholders);
+}
+
+/// A proposed stakeholder list awaiting its timelock delay (Issue #689), if any.
+pub fn get_pending_stakeholders(env: &Env) -> Option<PendingStakeholders> {
+    env.storage().instance().get(&StorageKey::PendingStakeholders)
+}
+
+pub fn set_pending_stakeholders(env: &Env, pending: &PendingStakeholders) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::PendingStakeholders, pending);
+}
+
+pub fn clear_pending_stakeholders(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&StorageKey::PendingStakeholders);
 }
 
 // ── Emergency Mode (Issue #662) ─────────────────────────────────────────────

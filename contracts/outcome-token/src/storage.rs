@@ -25,6 +25,9 @@ pub enum StorageKey {
     Balance(u32, Address, TokenKind),
     /// Per-market, per-side total supply.
     TotalSupply(u32, TokenKind),
+    /// A proposed `market_contract` (mint authority) rotation awaiting its
+    /// timelock delay (Issue #691).
+    PendingMarketContract,
 }
 
 // ── Version ───────────────────────────────────────────────────────────────
@@ -62,6 +65,24 @@ pub fn get_config(env: &Env) -> OutcomeTokenConfig {
 
 pub fn set_config(env: &Env, config: &OutcomeTokenConfig) {
     env.storage().persistent().set(&StorageKey::Config, config);
+}
+
+pub fn get_pending_market_contract(env: &Env) -> Option<PendingAddressChange> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingMarketContract)
+}
+
+pub fn set_pending_market_contract(env: &Env, pending: &PendingAddressChange) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingMarketContract, pending);
+}
+
+pub fn clear_pending_market_contract(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PendingMarketContract);
 }
 
 pub fn get_balance(env: &Env, market_id: u32, user: &Address, kind: &TokenKind) -> i128 {

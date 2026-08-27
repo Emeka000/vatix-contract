@@ -151,7 +151,11 @@ else
     fi
 
     if [[ -z "${expected}" ]]; then
-      warn "${name}: no expectedSha256 pinned in expected-hashes.json yet (built hash: ${actual}) — not pinned, not failing"
+      if [[ "${ALLOW_UNPINNED_HASHES:-}" == "1" ]]; then
+        warn "${name}: no expectedSha256 pinned in expected-hashes.json yet (built hash: ${actual}) — ALLOW_UNPINNED_HASHES=1 set, not failing"
+      else
+        fail "${name}: no expectedSha256 pinned in expected-hashes.json (built hash: ${actual}). Fail-closed by default for audit/mainnet readiness (Issue #697) — pin it via scripts/verify-wasm-hash.sh, or set ALLOW_UNPINNED_HASHES=1 for local/dev dry-runs."
+      fi
       return
     fi
 
