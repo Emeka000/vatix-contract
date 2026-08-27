@@ -19,7 +19,7 @@
 //! | `FeesDistributed`       | `fees_distributed`                 |
 //! | `EmergencyModeChanged`  | `emergency_mode_changed`           |
 
-use soroban_sdk::{contractevent, Address, Env};
+use soroban_sdk::{contractevent, Address, Env, Vec};
 
 // ── Initialization ────────────────────────────────────────────────────────────
 
@@ -226,16 +226,50 @@ pub fn emit_market_removed(env: &Env, market_contract: &Address) {
 
 // ── Stakeholder fee distribution (#485) ───────────────────────────────────────
 
+/// Emitted when an admin proposes a new stakeholder revenue-share list
+/// (Issue #689). Carries the full `(stakeholder, share_bps)` payload — as
+/// parallel `stakeholders` / `shares_bps` vectors — so an off-chain indexer
+/// can reconstruct the proposed split without a separate on-chain read. Does
+/// not take effect until `effective_at` and `execute_stakeholders` is called.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct StakeholdersProposed {
+    pub stakeholders: Vec<Address>,
+    pub shares_bps: Vec<u32>,
+    pub effective_at: u64,
+}
+
+pub fn emit_stakeholders_proposed(
+    env: &Env,
+    stakeholders: &Vec<Address>,
+    shares_bps: &Vec<u32>,
+    effective_at: u64,
+) {
+    StakeholdersProposed {
+        stakeholders: stakeholders.clone(),
+        shares_bps: shares_bps.clone(),
+        effective_at,
+    }
+    .publish(env);
+}
+
+/// Emitted once a proposed stakeholder list's timelock has elapsed and it is
+/// applied. Carries the full payload (not just a count) for indexer
+/// reconstruction (Issue #689).
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct StakeholdersUpdated {
     pub stakeholder_count: u32,
+    pub stakeholders: Vec<Address>,
+    pub shares_bps: Vec<u32>,
     pub updated_at: u64,
 }
 
-pub fn emit_stakeholders_updated(env: &Env, stakeholder_count: u32) {
+pub fn emit_stakeholders_updated(env: &Env, stakeholders: &Vec<Address>, shares_bps: &Vec<u32>) {
     StakeholdersUpdated {
-        stakeholder_count,
+        stakeholder_count: stakeholders.len(),
+        stakeholders: stakeholders.clone(),
+        shares_bps: shares_bps.clone(),
         updated_at: env.ledger().timestamp(),
     }
     .publish(env);

@@ -104,7 +104,8 @@ mod withdraw_fuzz;
 mod validation;
 
 use crate::error::ContractError;
-use crate::types::{AdapterType, Market, MarketStatus, Position};
+use crate::oracle_adapter::Asset;
+use crate::types::{AdapterType, Market, MarketAdapterConfig, MarketStatus, Position};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
 use vatix_outcome_token_contract::{types::TokenKind, OutcomeTokenContractClient};
 use vatix_resolution_contract::types::CandidateStatus as ResolutionCandidateStatus;
@@ -770,6 +771,48 @@ impl MarketContract {
         storage::is_adapter_enabled(&env, &adapter_type)
     }
 
+    /// Set (or replace) the Reflector/Pyth adapter config for `market_id`
+    /// (#681) — the oracle contract address, asset, and price threshold
+    /// `oracle::verify_market_outcome` uses once the corresponding adapter
+    /// type is enabled via `set_adapter_enabled` (#680).
+    ///
+    /// Only the stored admin may call this.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotAdmin`] — `admin` is not the stored admin.
+    /// - [`ContractError::MarketNotFound`] — `market_id` does not exist.
+    pub fn set_market_adapter_config(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        oracle_contract: Address,
+        asset: Asset,
+        resolution_price: i128,
+    ) -> Result<(), ContractError> {
+        validation::require_initialized(&env)?;
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+        storage::get_market(&env, market_id)?.ok_or(ContractError::MarketNotFound)?;
+        storage::set_market_adapter_config(
+            &env,
+            market_id,
+            &MarketAdapterConfig {
+                oracle_contract,
+                asset,
+                resolution_price,
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the stored Reflector/Pyth adapter config for `market_id`, if any (#681).
+    pub fn get_market_adapter_config(env: Env, market_id: u32) -> Option<MarketAdapterConfig> {
+        storage::get_market_adapter_config(&env, market_id)
+    }
+
     /// Pause the contract for emergency maintenance.
     ///
     /// While paused, `deposit_collateral`, `withdraw_unused_collateral`,
@@ -1181,9 +1224,35 @@ impl MarketContract {
             if lock_increased && market.closed_to_deposits {
                 return Err(ContractError::MarketClosedToDeposits);
             }
-            if lock_increased && prospective_locked > position.total_deposited {
-                return Err(ContractError::InsufficientCollateral);
+            // Protocol-wide collateral check (ADR-002, issue #685): collateral
+            // is a single balance per user shared across every market
+            // (`storage::CollateralBalance`) rather than siloed per market.
+            // A trade is only rejected here when it would *increase* this
+            // market's lock beyond what the user's balance can cover once
+            // collateral already locked in every *other* market
+            // (`storage::TotalLockedCollateral` minus this market's current
+            // lock) is accounted for.
+            let locked_elsewhere = storage::get_total_locked_collateral(&env, &user)
+                .saturating_sub(position.locked_collateral);
+            if lock_increased {
+                let protocol_balance = storage::get_collateral_balance(&env, &user);
+                if positions::check_protocol_collateral(
+                    prospective_locked,
+                    protocol_balance,
+                    locked_elsewhere,
+                )
+                .is_err()
+                {
+                    return Err(ContractError::InsufficientCollateral);
+                }
             }
+            // Keep the protocol-wide aggregate in sync so other markets see
+            // this market's updated lock immediately.
+            storage::set_total_locked_collateral(
+                &env,
+                &user,
+                locked_elsewhere.saturating_add(prospective_locked),
+            );
         }
 
         // 5. Apply the share deltas (persists the position and emits an event)
@@ -1683,7 +1752,14 @@ impl MarketContract {
     /// # Errors
     /// - [`ContractError::InvalidThresholdQuorum`] — `quorum` exceeds
     ///   `signers.len()`; such a quorum could never be satisfied.
+    ///
     /// Propose a threshold signer set and quorum update, subject to timelock (#665).
+    ///
+    /// This is now the *only* production path to change the global threshold
+    /// signer set — the legacy instant `set_threshold_signers` entrypoint was
+    /// removed (#684) because it let an admin bypass the
+    /// [`FEE_RATE_TIMELOCK_SECONDS`] (172,800s / 48h) delay enforced here and
+    /// in [`Self::execute_threshold_signers`].
     pub fn propose_threshold_signers(
         env: Env,
         admin: Address,
@@ -1773,29 +1849,6 @@ impl MarketContract {
         }
         storage::set_market_threshold_signers(&env, market_id, &signers);
         storage::set_market_threshold_quorum(&env, market_id, quorum);
-        Ok(())
-    }
-
-    /// Legacy immediate set_threshold_signers retained for test backward compatibility.
-    pub fn set_threshold_signers(
-        env: Env,
-        admin: Address,
-        signers: soroban_sdk::Vec<BytesN<32>>,
-        quorum: u32,
-    ) -> Result<(), ContractError> {
-        validation::require_initialized(&env)?;
-        validation::require_not_paused(&env)?;
-        admin.require_auth();
-        let stored_admin = storage::get_admin(&env)?;
-        if admin != stored_admin {
-            return Err(ContractError::NotAdmin);
-        }
-        let signers_len = signers.len();
-        if quorum == 0 || signers_len == 0 || quorum > signers_len {
-            return Err(ContractError::InvalidThresholdQuorum);
-        }
-        storage::set_threshold_signers(&env, &signers);
-        storage::set_threshold_quorum(&env, quorum);
         Ok(())
     }
 

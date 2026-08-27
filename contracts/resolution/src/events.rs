@@ -260,6 +260,39 @@ pub fn emit_market_contract_set(env: &Env, market_contract: &Address) {
     }.publish(env);
 }
 
+/// Emitted when an admin proposes a new treasury address for the slashed-bond
+/// treasury cut (Issue #687). Does not take effect until `effective_at` and
+/// `execute_treasury` is called.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TreasuryProposed {
+    #[topic]
+    pub treasury: Address,
+    pub effective_at: u64,
+}
+
+pub fn emit_treasury_proposed(env: &Env, treasury: &Address, effective_at: u64) {
+    TreasuryProposed {
+        treasury: treasury.clone(),
+        effective_at,
+    }.publish(env);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TreasurySet {
+    #[topic]
+    pub treasury: Address,
+    pub set_at: u64,
+}
+
+pub fn emit_treasury_set(env: &Env, treasury: &Address) {
+    TreasurySet {
+        treasury: treasury.clone(),
+        set_at: env.ledger().timestamp(),
+    }.publish(env);
+}
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct CandidateFinalized {

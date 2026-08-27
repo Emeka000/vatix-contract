@@ -32,3 +32,14 @@ pub struct OutcomeTokenConfig {
     /// Ticker symbol (SAC metadata).
     pub symbol: String,
 }
+
+/// A proposed `market_contract` (mint/burn authority) rotation awaiting its
+/// timelock delay before it can take effect (Issue #691). Mirrors the market
+/// contract's own address-change timelock pattern so mint authority cannot
+/// rotate instantly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PendingAddressChange {
+    pub new_address: Address,
+    pub effective_at: u64,
+}

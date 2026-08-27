@@ -99,38 +99,41 @@ contract and fails if a pinned hash doesn't match what was just built.
 [`version-matrix.json`](version-matrix.json) is the machine-checked source
 of truth for which `STORAGE_VERSION` values are compatible across
 contracts. `check-upgrade.sh` Phase A compares it against the
-`STORAGE_VERSION` constants compiled into `contracts/market/src/storage.rs`
-and `contracts/treasury/src/storage.rs` and fails on drift — the same
+`STORAGE_VERSION` constants compiled into `contracts/market/src/storage.rs`,
+`contracts/treasury/src/storage.rs`, `contracts/resolution/src/storage.rs`,
+and `contracts/outcome-token/src/storage.rs`, and fails on drift — the same
 "drift" failure mode the market contract's own
 `test_storage_version_documented_in_migration_guide` test guards against,
 extended across contracts.
 
-Resolution and Outcome Token do not have a `STORAGE_VERSION` constant today
-— they're tracked in the matrix as `versioningScheme: "wasmHashOnly"` and
-pinned by WASM hash instead (see above). Adding real storage versioning to
-those two contracts is a natural follow-up to this playbook but is **out of
-scope** for issue #664, which is about the cross-contract orchestration
-layer, not new per-contract storage-versioning code — see the `note` field
-on each contract's entry in `version-matrix.json`.
+**Update (Issue #696):** Resolution and Outcome Token now carry their own
+`STORAGE_VERSION` constant and `storage::assert_version` guard, same as
+market and treasury — they're tracked in the matrix as
+`versioningScheme: "storageVersion"` like the other two, currently both at
+`storageVersion: 1` (their first versioned layout; no schema shape changed,
+only the guard was added). Before this, a partial cross-contract upgrade
+that redeployed Resolution or Outcome Token onto a fresh/mismatched storage
+layout had no on-chain guard at all — the old `wasmHashOnly` scheme only
+caught a build-artifact drift, not a *storage* drift, so a stale deployment
+could keep serving `finalize`/`mint`/`burn` calls against a layout the
+compiled contract no longer agreed with, silently corrupting state instead
+of failing closed with `UpgradeRequired`. `assert_version` now runs at the
+top of every state-mutating entry point on both contracts (finalize,
+propose, challenge, appeal, arbitrate_uphold_proposer, void_market, and the
+address-rotation calls on Resolution; mint, burn, transfer, and the config
+setters on Outcome Token), so an unversioned or stale deployment now fails
+closed exactly like market and treasury already did. WASM-hash pinning via
+`expected-hashes.json` (see above) is unaffected and still applies to all
+four contracts regardless of storage-versioning scheme — it catches
+build-artifact drift, which is an orthogonal concern to storage-layout
+drift.
 
-**#701 note:** `ResolutionCandidate` gained two fields (`epoch: u32`,
-`passphrase_hash: Option<BytesN<32>>`) to support the new `propose_v2`
-entrypoint (V2 oracle verification, binding network passphrase + epoch —
-see `docs/adr-001-oracle-adapter.md` and `contracts/market/src/oracle.rs`
-for the V1/V2 message formats). Since Resolution has no dual-read
-migration path (`versioningScheme: "wasmHashOnly"` above), this is only
-safe under the fresh-deployment model — there must be no live
-`ResolutionCandidate` records serialized under the old (pre-#701) shape
-when this upgrade ships. Confirm `deployments/testnet.json`'s
-`contracts.resolution.contractId` is either unset or freshly redeployed
-before rolling this out.
-
-**Updating the matrix:** whenever you bump `STORAGE_VERSION` on market or
-treasury, add the new value to `version-matrix.json`'s `contracts.<name>`
-entry and append a row to `compatibility` describing which
-resolution/outcome-token interface tag it's compatible with, in the same PR
-— exactly like the existing `STORAGE_MIGRATION_GUIDE.md` "Version History"
-convention.
+**Updating the matrix:** whenever you bump `STORAGE_VERSION` on any of the
+four contracts, add the new value to `version-matrix.json`'s
+`contracts.<name>` entry and append a row to `compatibility` recording the
+new `<name>StorageVersion` alongside the others it's compatible with, in
+the same PR — exactly like the existing `STORAGE_MIGRATION_GUIDE.md`
+"Version History" convention.
 
 ## Dual-read migration for the next storage bump
 
@@ -167,9 +170,10 @@ The `upgrade-dry-run` job in
 
 - Storage-version drift between source and `version-matrix.json` fails CI.
 - A pinned WASM hash that doesn't match the freshly built artifact fails CI.
-- The `UpgradeRequired` regression tests for market and treasury run as part
-  of the same job, so a change that accidentally removes a version guard
-  (see "Pitfall 2" in `STORAGE_MIGRATION_GUIDE.md`) fails CI too.
+- The `UpgradeRequired` regression tests for all four contracts (market,
+  treasury, resolution, outcome-token — see #696) run as part of the same
+  job, so a change that accidentally removes a version guard (see "Pitfall
+  2" in `STORAGE_MIGRATION_GUIDE.md`) fails CI too.
 
 ## Rollback
 
