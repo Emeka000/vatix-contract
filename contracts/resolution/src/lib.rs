@@ -37,6 +37,7 @@
 //!
 //! | Key                            | Type                     | Description                                   |
 //! |--------------------------------|--------------------------|-----------------------------------------------|
+//! | `StorageVersion`               | `u32`                    | Schema version guard (#696)                   |
 //! | `Config`                       | `ResolutionConfig`       | Admin, factory, and market contract addresses |
 //! | `CandidateCounter`             | `u32`                    | Auto-increment counter for candidate IDs      |
 //! | `Candidate(u32)`               | `ResolutionCandidate`    | Per-candidate resolution data                  |
@@ -51,6 +52,8 @@ pub mod types;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod bond_split_proptest;
 
 use crate::error::ContractError;
 use crate::types::{CandidateStatus, EmergencyMode, MarketStatus, ResolutionCandidate, ResolutionConfig};
@@ -127,6 +130,7 @@ impl ResolutionContract {
                 challenge_window_secs,
             },
         );
+        storage::set_version(&env);
         events::emit_resolution_registered(&env, &factory, &market_contract);
         Ok(())
     }
@@ -141,6 +145,7 @@ impl ResolutionContract {
         seconds: u64,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let mut config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         validate_challenge_window(seconds)?;
@@ -156,7 +161,7 @@ impl ResolutionContract {
     pub const ADDRESS_TIMELOCK_SECONDS: u64 = 172_800;
 
     pub fn propose_factory(env: Env, admin: Address, factory: Address) -> Result<(), ContractError> {
-        admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
@@ -172,6 +177,7 @@ impl ResolutionContract {
     }
 
     pub fn execute_factory(env: Env) -> Result<Address, ContractError> {
+        storage::assert_version(&env)?;
         let pending = storage::get_pending_factory(&env).ok_or(ContractError::Unauthorized)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::Unauthorized);
@@ -185,7 +191,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_factory(env: Env, admin: Address) -> Result<(), ContractError> {
-        admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::clear_pending_factory(&env);
@@ -197,7 +203,7 @@ impl ResolutionContract {
         admin: Address,
         market_contract: Address,
     ) -> Result<(), ContractError> {
-        admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         let effective_at = env.ledger().timestamp() + Self::ADDRESS_TIMELOCK_SECONDS;
@@ -213,6 +219,7 @@ impl ResolutionContract {
     }
 
     pub fn execute_market_contract(env: Env) -> Result<Address, ContractError> {
+        storage::assert_version(&env)?;
         let pending = storage::get_pending_market_contract(&env).ok_or(ContractError::Unauthorized)?;
         if env.ledger().timestamp() < pending.effective_at {
             return Err(ContractError::Unauthorized);
@@ -226,7 +233,7 @@ impl ResolutionContract {
     }
 
     pub fn cancel_market_contract(env: Env, admin: Address) -> Result<(), ContractError> {
-        admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::clear_pending_market_contract(&env);
@@ -256,6 +263,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<u32, ContractError> {
         proposer.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: resolution proposals are blocked unless mode is Normal
         require_emergency_mode_allows(
@@ -294,12 +302,15 @@ impl ResolutionContract {
         );
         verification?;
 
-        // Lock the proposer's bond in this contract's collateral-token
-        // balance. Uses the same token as the market's collateral so a
-        // single `finalize` refund path can rely on it.
+        // Resolve the bond token, but defer the actual transfer until after
+        // every state write below (Checks-Effects-Interactions, Issue #695).
+        // Previously this transfer ran before `storage::set_candidate`, so a
+        // reentrant call back into `propose` for the same `market_id` from
+        // inside a malicious collateral token's `transfer` could have slipped
+        // past the `CandidateAlreadyExists` guard above (which only sees a
+        // candidate once one has actually been persisted) and posted a
+        // second, inconsistent proposal before the first had recorded its own.
         let collateral_token = get_collateral_token(&env, &config, market_id);
-        let token_client = TokenClient::new(&env, &collateral_token);
-        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
 
         let proposed_at = env.ledger().timestamp();
         // Validate signature expiry must be in the future (at or after proposed_at)
@@ -312,7 +323,7 @@ impl ResolutionContract {
             outcome,
             signature,
             signature_expiry,
-            proposer,
+            proposer: proposer.clone(),
             evidence_uri,
             proposed_at,
             challenge_deadline: proposed_at + challenge_window_seconds,
@@ -326,6 +337,14 @@ impl ResolutionContract {
 
         storage::set_candidate(&env, &candidate);
         events::emit_candidate_proposed(&env, &candidate);
+
+        // Lock the proposer's bond in this contract's collateral-token
+        // balance. Uses the same token as the market's collateral so a
+        // single `finalize` refund path can rely on it. Ordered after every
+        // state write above (Checks-Effects-Interactions, Issue #695).
+        let token_client = TokenClient::new(&env, &collateral_token);
+        token_client.transfer(&proposer, &env.current_contract_address(), &bond_amount);
+
         Ok(candidate.id)
     }
 
@@ -352,6 +371,7 @@ impl ResolutionContract {
         bond_amount: i128,
     ) -> Result<(), ContractError> {
         challenger.require_auth();
+        storage::assert_version(&env)?;
         // Emergency mode: challenges are blocked in SettleOnly and GlobalFreeze
         require_emergency_mode_allows(
             &env,
@@ -382,14 +402,24 @@ impl ResolutionContract {
 
         let config = storage::get_config(&env);
         let collateral_token = get_collateral_token(&env, &config, candidate.market_id);
-        let this = env.current_contract_address();
-        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
 
+        // Effects before Interactions (Issue #695): persist the Challenged
+        // status and the new challenger record BEFORE the external bond
+        // transfer below. Previously the transfer ran first while
+        // `candidate.status` was still e.g. `Proposed`, so a reentrant call
+        // back into `challenge` for the same `candidate_id` from inside a
+        // malicious collateral token's `transfer` could have slipped past
+        // the `CandidateAlreadyChallenged` guard above and posted a second,
+        // inconsistent challenge before the first had recorded its own.
         candidate.status = CandidateStatus::Challenged;
         candidate.challenged_by = Some(challenger.clone());
         candidate.challenge_uri = Some(challenge_uri.clone());
         storage::set_candidate(&env, &candidate);
         storage::append_challenger(&env, candidate_id, &challenger, bond_amount);
+
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &collateral_token).transfer(&challenger, &this, &bond_amount);
+
         events::emit_candidate_challenged(
             &env,
             candidate_id,
@@ -420,6 +450,7 @@ impl ResolutionContract {
         challenge_window_seconds: u64,
     ) -> Result<(), ContractError> {
         proposer.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: appeals are blocked unless mode is Normal
         require_emergency_mode_allows(
@@ -483,6 +514,11 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         finalizer.require_auth();
+        // Storage-version guard (Issue #696): a stale/partially-upgraded
+        // deployment must fail closed here rather than let `finalize` run
+        // its bond-settlement and `resolve_market` callback against a
+        // storage layout the compiled contract no longer understands.
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         // Emergency mode: finalization is blocked only in GlobalFreeze
         require_emergency_mode_allows(
@@ -585,6 +621,7 @@ impl ResolutionContract {
         amount: i128,
     ) -> Result<(), ContractError> {
         proposer.require_auth();
+        storage::assert_version(&env)?;
         // Emergency mode: collateral deposits are blocked unless mode is Normal
         require_emergency_mode_allows(
             &env,
@@ -593,13 +630,20 @@ impl ResolutionContract {
         if amount <= 0 {
             return Err(ContractError::InvalidCollateral);
         }
+        // Effects before Interactions (Issue #695): persist the increased
+        // collateral balance BEFORE the external transfer below. Previously
+        // the transfer ran first while `prev` (read before it) was stale, so
+        // a reentrant call back into `deposit_collateral` from inside a
+        // malicious collateral token's `transfer` could have read the same
+        // stale `prev` and overwritten rather than accumulated one of the
+        // two deposits.
+        let prev = storage::get_proposer_collateral(&env, &proposer);
+        storage::set_proposer_collateral(&env, &proposer, prev + amount);
         TokenClient::new(&env, &collateral_token).transfer(
             &proposer,
             &env.current_contract_address(),
             &amount,
         );
-        let prev = storage::get_proposer_collateral(&env, &proposer);
-        storage::set_proposer_collateral(&env, &proposer, prev + amount);
         Ok(())
     }
 
@@ -612,6 +656,7 @@ impl ResolutionContract {
         recipient: Address,
     ) -> Result<i128, ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         let amount = storage::get_proposer_collateral(&env, &proposer);
@@ -638,6 +683,7 @@ impl ResolutionContract {
     /// share simply stays in this contract's own collateral-token balance.
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) -> Result<(), ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
         storage::set_treasury(&env, &treasury);
@@ -665,6 +711,7 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
 
@@ -718,6 +765,7 @@ impl ResolutionContract {
         candidate_id: u32,
     ) -> Result<ResolutionCandidate, ContractError> {
         admin.require_auth();
+        storage::assert_version(&env)?;
         let config = storage::get_config(&env);
         require_admin(&admin, &config)?;
 
