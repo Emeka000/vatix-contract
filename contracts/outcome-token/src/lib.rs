@@ -185,12 +185,26 @@ impl OutcomeTokenContract {
 
     /// Transfer `amount` tokens of `kind` from `from` to `to` within `market_id`.
     ///
-    /// Outcome tokens only become transferable once the associated market has
-    /// resolved (checked via a cross-contract call to the registered market
-    /// contract's `get_market_status`). Before resolution, positions can only
-    /// change through [`mint`]/[`burn`] driven by the market contract itself,
-    /// so this keeps a market's price-discovery phase free of secondary-market
+    /// Before resolution, positions can only change through [`mint`]/[`burn`]
+    /// driven by the market contract itself, so a direct peer-to-peer
+    /// transfer is rejected with [`ContractError::MarketNotResolved`] — this
+    /// keeps a market's price-discovery phase free of secondary-market
     /// transfers of unsettled claims.
+    ///
+    /// Once the market has resolved, peer-to-peer transfer is *also*
+    /// rejected — this time with
+    /// [`ContractError::TransferBlockedAfterResolve`] — because the market
+    /// contract's settlement logic (`settlement.rs`) pays out against the
+    /// `Position` record it stores for the *original* depositor's address,
+    /// not against whichever address currently holds the outcome-token
+    /// balance (see `reconciliation.rs`, which only reconciles a single
+    /// user's own Position/token divergence and cannot repair a transfer to
+    /// a *different* address). Allowing a transfer here would let a holder
+    /// move their balance to a fresh address post-resolution while the
+    /// original Position still entitles them to the full payout — the same
+    /// claim paid out twice (Issue #690). Closing that gap by blocking the
+    /// transfer entirely is far simpler and safer than trying to atomically
+    /// migrate the `Position` record across a cross-contract call.
     pub fn transfer(
         env: Env,
         market_id: u32,
@@ -211,22 +225,10 @@ impl OutcomeTokenContract {
             &Symbol::new(&env, "get_market_status"),
             soroban_sdk::vec![&env, market_id.into_val(&env)],
         );
-        if status != MarketStatus::Resolved {
-            return Err(ContractError::MarketNotResolved);
+        if status == MarketStatus::Resolved {
+            return Err(ContractError::TransferBlockedAfterResolve);
         }
-
-        let from_balance = storage::get_balance(&env, market_id, &from, &kind);
-        if from_balance < amount {
-            return Err(ContractError::InsufficientBalance);
-        }
-        storage::set_balance(&env, market_id, &from, &kind, from_balance - amount);
-
-        let to_balance = storage::get_balance(&env, market_id, &to, &kind);
-        let new_to_balance = to_balance.checked_add(amount).ok_or(ContractError::Overflow)?;
-        storage::set_balance(&env, market_id, &to, &kind, new_to_balance);
-
-        events::emit_token_transferred(&env, market_id, &from, &to, kind, amount);
-        Ok(())
+        Err(ContractError::MarketNotResolved)
     }
 
     /// Return the token balance for a specific `(market_id, user, kind)` triple.
